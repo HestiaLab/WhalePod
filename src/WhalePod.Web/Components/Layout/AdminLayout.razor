@@ -1,0 +1,28 @@
+@inherits LayoutComponentBase
+@layout MainLayout
+
+<div class="admin-shell">
+    <aside class="admin-rail" aria-label="管理后台侧栏">
+        <div class="admin-rail-head">
+            <span class="admin-rail-mark"><WhaleMark /></span>
+            <div>
+                <strong>鲸群管理台</strong>
+            </div>
+        </div>
+
+        <AdminNav />
+
+        <div class="admin-rail-foot">
+            <a href="/">← 返回公开站</a>
+        </div>
+    </aside>
+
+    <div class="admin-content">
+        <details class="admin-mobile-nav">
+            <summary>后台导航</summary>
+            <AdminNav />
+        </details>
+
+        @Body
+    </div>
+</div>

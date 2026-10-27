@@ -1,0 +1,262 @@
+@page "/admin/invites"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject InviteAdminService InviteAdmin
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>邀请码管理 - WhalePod</PageTitle>
+
+<h1>邀请码管理</h1>
+
+
+<p><a href="/">返回首页</a></p>
+
+@if (MessageText is not null)
+{
+    <p role="status">@MessageText</p>
+}
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+<section aria-labelledby="create-invite-heading">
+    <h2 id="create-invite-heading">创建邀请码</h2>
+    <form method="post" action="/admin/invites/create">
+        <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+        <p>
+            <label for="invite-note">用途备注（可选，最多 200 字）</label><br />
+            <textarea id="invite-note" name="note" rows="2" maxlength="200"></textarea>
+        </p>
+        <div class="form-grid">
+            <p>
+                <label for="invite-max-uses">最大使用次数</label><br />
+                <input id="invite-max-uses" name="maxUses" type="number" min="1" max="1000" value="1" required />
+            </p>
+            <p>
+                <label for="invite-expires">有效期至（北京时间，可选，当日 23:59 结束）</label><br />
+                <input id="invite-expires" name="expiresOn" type="date" min="@DisplayFormat.TodayInChina()" />
+            </p>
+        </div>
+        <button type="submit">创建并查看邀请码</button>
+    </form>
+    <p>邀请码明文只显示一次；数据库仅保存 SHA-256 哈希。</p>
+</section>
+
+<section aria-labelledby="search-invite-heading">
+    <h2 id="search-invite-heading">按完整邀请码查看</h2>
+    <form method="post" action="/admin/invites/search">
+        <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+        <p>
+            <label for="search-code">完整邀请码</label>
+            <input id="search-code" name="code" maxlength="200" autocomplete="off" required />
+        </p>
+        <button type="submit">查看使用记录</button>
+    </form>
+    <p>完整邀请码只用于服务端哈希匹配，不回显、不写入 URL 或审计。</p>
+</section>
+
+<section aria-labelledby="filter-invites-heading">
+    <h2 id="filter-invites-heading">筛选</h2>
+    <form class="filter-form" method="get" action="/admin/invites">
+        <p>
+            <label for="filter-state">状态</label>
+            <select id="filter-state" name="state">
+                <option value="">全部</option>
+                <option value="active" selected="@(State == "active")">有效</option>
+                <option value="exhausted" selected="@(State == "exhausted")">已用尽</option>
+                <option value="expired" selected="@(State == "expired")">已过期</option>
+                <option value="disabled" selected="@(State == "disabled")">已停用</option>
+            </select>
+        </p>
+        <p>
+            <label for="filter-hint">邀请码末 4 位（提示）</label>
+            <input id="filter-hint" name="hint" maxlength="8" autocomplete="off" />
+        </p>
+        <p>
+            <label for="filter-member">成员 handle</label>
+            <input id="filter-member" name="member" maxlength="32" autocomplete="off" />
+        </p>
+        <div class="form-actions">
+            <button type="submit">筛选</button>
+            <a href="/admin/invites">清除筛选</a>
+        </div>
+    </form>
+</section>
+
+<section aria-labelledby="invite-list-heading">
+    <h2 id="invite-list-heading">邀请码列表</h2>
+
+    @if (Result.Items.Count == 0)
+    {
+        <div class="empty-state">
+            <p>没有符合条件的邀请码。</p>
+            <p><a href="/admin/invites">清除筛选</a></p>
+        </div>
+    }
+    else
+    {
+        <form method="post" action="/admin/invites/disable">
+            <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+            <div class="table-scroll" tabindex="0" role="region" aria-label="邀请码数据表">
+                <table class="admin-invite-table">
+                    <caption>共 @Result.TotalCount 个邀请码；第 @Result.Page 页。列表不显示明文邀请码。</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col">选择</th>
+                            <th scope="col">状态</th>
+                            <th scope="col">提示</th>
+                            <th scope="col">创建者</th>
+                            <th scope="col">使用</th>
+                            <th scope="col">过期/停用</th>
+                            <th scope="col">备注</th>
+                            <th scope="col">最近邀请</th>
+                            <th scope="col">使用记录</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var invite in Result.Items)
+                        {
+                            <tr>
+                                <td>
+                                    @if (invite.Status == "active" && invite.UsedCount == 0)
+                                    {
+                                        <input type="checkbox" name="inviteIds" value="@invite.Id"
+                                               aria-label="选择邀请码 @(invite.CodeHint ?? invite.Id.ToString())" />
+                                    }
+                                    else
+                                    {
+                                        <span>—</span>
+                                    }
+                                </td>
+                                <td>@DisplayFormat.State(invite.State)</td>
+                                <td>@(invite.CodeHint ?? "—")</td>
+                                <td>@invite.CreatedByHandle</td>
+                                <td>@invite.UsedCount / @invite.MaxUses</td>
+                                <td>
+                                    @if (invite.DisabledAt is not null)
+                                    {
+                                        <span>停用于 @DisplayFormat.Time(invite.DisabledAt)</span>
+                                    }
+                                    else
+                                    {
+                                        <span>过期：@DisplayFormat.Time(invite.ExpiresAt)</span>
+                                    }
+                                </td>
+                                <td>@(invite.Note ?? "—")</td>
+                                <td>@(invite.RecentInvitees.Count == 0 ? "—" : string.Join("、", invite.RecentInvitees))</td>
+                                <td><a href="/admin/invites/@invite.Id">查看</a></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            @if (HasSelectableInvites)
+            {
+                <p>
+                    <label>
+                        <input type="checkbox" name="confirmDisable" value="true" required />
+                        我已确认只停用未使用邀请码；已使用的邀请码和已激活账号不受影响
+                    </label>
+                </p>
+                <button type="submit" class="button-danger">停用所选</button>
+            }
+            else
+            {
+                <p>当前页没有可停用的未使用邀请码。</p>
+            }
+        </form>
+    }
+
+    <nav aria-label="分页">
+        @if (Result.Page > 1)
+        {
+            <a href="@PageUrl(Result.Page - 1)">上一页</a>
+        }
+        @if (Result.Page * Result.PageSize < Result.TotalCount)
+        {
+            <a href="@PageUrl(Result.Page + 1)">下一页</a>
+        }
+    </nav>
+</section>
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? State { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Hint { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Member { get; set; }
+
+    [SupplyParameterFromQuery]
+    public int Page { get; set; } = 1;
+
+    [SupplyParameterFromQuery]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    [SupplyParameterFromQuery]
+    public int? Disabled { get; set; }
+
+    [SupplyParameterFromQuery]
+    public int? Skipped { get; set; }
+
+    private InviteAdminList Result { get; set; } = new([], 1, InviteAdminService.PageSize, 0);
+    private string Token { get; set; } = string.Empty;
+    private bool HasSelectableInvites => Result.Items.Any(invite => invite.Status == "active" && invite.UsedCount == 0);
+
+    private string? MessageText => Message switch
+    {
+        "disabled" => $"已停用 {Disabled ?? 0} 个邀请码；跳过 {Skipped ?? 0} 个（已使用、已停用或不存在）。",
+        _ => null
+    };
+
+    private string? ErrorText => Error switch
+    {
+        "selection" => "请选择至少一个未使用邀请码，并确认停用操作。",
+        "invalid" => "邀请码参数无效，请检查次数、备注与有效期。",
+        "invalid-expiry" => "有效期格式无效，或日期早于今天。",
+        "not-found" => "未找到该邀请码。",
+        _ => null
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+        Result = await InviteAdmin.ListAsync(State, Hint, Member, Page);
+    }
+
+    private string PageUrl(int page)
+    {
+        var query = new List<string> { $"page={page}" };
+        if (!string.IsNullOrWhiteSpace(State))
+        {
+            query.Add($"state={Uri.EscapeDataString(State)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(Hint))
+        {
+            query.Add($"hint={Uri.EscapeDataString(Hint)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(Member))
+        {
+            query.Add($"member={Uri.EscapeDataString(Member)}");
+        }
+
+        return "/admin/invites?" + string.Join("&", query);
+    }
+}

@@ -1,0 +1,187 @@
+@inherits LayoutComponentBase
+@layout MainLayout
+@using Microsoft.AspNetCore.Components.Sections
+@using Microsoft.AspNetCore.WebUtilities
+@using Microsoft.Extensions.DependencyInjection
+@using WhalePod.Infrastructure.Services
+@inject IServiceScopeFactory ScopeFactory
+@inject NavigationManager Navigation
+@inject ILogger<PublicLayout> Logger
+
+<SectionOutlet SectionName="PageHeader" />
+
+<div class="public-grid">
+    <div class="public-content">
+        @Body
+    </div>
+
+    <aside class="public-sidebar public-sidebar-left" aria-labelledby="sidebar-categories-heading">
+        <div class="sidebar-panel">
+            <div class="sidebar-head">
+                <h2 id="sidebar-categories-heading">分类</h2>
+            </div>
+            <nav aria-label="分类导航">
+                @if (Categories.Count == 0)
+                {
+                    <p class="sidebar-note">暂无公开分类。</p>
+                }
+                else
+                {
+                    <ul class="sidebar-list">
+                        <li>
+                            <a href="@CategoryUrl(null)"
+                               aria-current="@(IsHome && CurrentCategory is null ? "page" : null)">
+                                全部记录
+                            </a>
+                        </li>
+                        @foreach (var category in Categories)
+                        {
+                            <li>
+                                <a href="@CategoryUrl(category.Slug)"
+                                   aria-current="@(string.Equals(CurrentCategory, category.Slug, StringComparison.OrdinalIgnoreCase) ? "page" : null)">
+                                    @category.Name
+                                </a>
+                            </li>
+                        }
+                    </ul>
+                }
+            </nav>
+            <div class="sidebar-actions">
+                <a href="/tags">全部标签</a>
+                <a href="/search">搜索</a>
+                <a href="/rss.xml">RSS</a>
+            </div>
+        </div>
+    </aside>
+
+    <aside class="public-sidebar public-sidebar-right" aria-label="热门与关于">
+        <h2 id="sidebar-popular-heading" class="rail-title">热门讨论</h2>
+        <details class="rail-disclosure" id="popular-rail" open>
+            <summary aria-label="展开或收起热门讨论"><span>热门讨论</span></summary>
+            <div class="rail-body">
+                <p class="sidebar-note">按最近活跃排序</p>
+                @if (PopularFailed)
+                {
+                    <p class="sidebar-note">热门讨论暂时无法加载。</p>
+                }
+                else if (Popular.Count == 0)
+                {
+                    <p class="sidebar-note">暂无公开讨论。</p>
+                }
+                else
+                {
+                    <ol class="popular-list">
+                        @foreach (var post in Popular)
+                        {
+                            <li>
+                                <div>
+                                    <a class="popular-title" href="/posts/@post.Id" title="@post.Title">@post.Title</a>
+                                    <span class="popular-meta">
+                                        @post.Category.Name · 评论 @post.Counts.Comments
+                                    </span>
+                                </div>
+                            </li>
+                        }
+                    </ol>
+                    <div class="sidebar-actions">
+                        <a href="/?sort=active">查看更多热门讨论</a>
+                    </div>
+                }
+                <div class="sidebar-panel sidebar-about">
+                    <span class="sidebar-mark"><WhaleMark /></span>
+                    <h3>关于鲸群</h3>
+                    <p class="sidebar-note">只收录可复现的 AI 工具实测记录与可直接复制的产物。</p>
+                    <div class="sidebar-actions">
+                        <a href="/tags">浏览标签</a>
+                        <a href="/search">搜索内容</a>
+                        <a href="/sitemap.xml">Sitemap</a>
+                    </div>
+                </div>
+            </div>
+        </details>
+    </aside>
+</div>
+
+@code {
+    private IReadOnlyList<CategoryView> Categories { get; set; } = [];
+    private IReadOnlyList<PostSummaryView> Popular { get; set; } = [];
+    private bool PopularFailed { get; set; }
+
+    private bool IsHome
+    {
+        get
+        {
+            var path = Navigation.ToBaseRelativePath(Navigation.Uri).Split('?', 2)[0];
+            return path is "" or "/";
+        }
+    }
+
+    private string? CurrentCategory
+    {
+        get
+        {
+            if (!IsHome)
+            {
+                return null;
+            }
+
+            return QueryHelpers.ParseQuery(Navigation.ToAbsoluteUri(Navigation.Uri).Query)
+                .TryGetValue("category", out var value)
+                && !string.IsNullOrWhiteSpace(value)
+                ? value.ToString()
+                : null;
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Layout and page render concurrently; an isolated scope keeps the request DbContext single-threaded.
+        await using var scope = ScopeFactory.CreateAsyncScope();
+        var content = scope.ServiceProvider.GetRequiredService<PublicContentService>();
+
+        try
+        {
+            Categories = await content.GetCategoriesAsync();
+        }
+        catch (Exception exception)
+        {
+            Logger.LogWarning(exception, "Failed to load public sidebar categories.");
+        }
+
+        try
+        {
+            var feed = await content.GetFeedAsync("active", null, null, 5, null);
+            Popular = feed.Items;
+        }
+        catch (Exception exception)
+        {
+            PopularFailed = true;
+            Logger.LogWarning(exception, "Failed to load public sidebar popular posts.");
+        }
+    }
+
+    private string CategoryUrl(string? slug)
+    {
+        var parameters = new List<string>();
+        if (IsHome)
+        {
+            var query = QueryHelpers.ParseQuery(Navigation.ToAbsoluteUri(Navigation.Uri).Query);
+            if (query.TryGetValue("sort", out var sort) && !string.IsNullOrWhiteSpace(sort))
+            {
+                parameters.Add($"sort={Uri.EscapeDataString(sort.ToString())}");
+            }
+
+            if (query.TryGetValue("tag", out var tag) && !string.IsNullOrWhiteSpace(tag))
+            {
+                parameters.Add($"tag={Uri.EscapeDataString(tag.ToString())}");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(slug))
+        {
+            parameters.Add($"category={Uri.EscapeDataString(slug)}");
+        }
+
+        return parameters.Count == 0 ? "/" : $"/?{string.Join("&", parameters)}";
+    }
+}

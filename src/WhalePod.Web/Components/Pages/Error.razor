@@ -1,0 +1,29 @@
+@page "/Error"
+@using System.Diagnostics
+
+<SeoHead Title="页面发生错误 - WhalePod" Description="服务器处理请求时发生错误。" NoIndex="true" />
+
+<div class="status-page">
+    <p class="status-code">HTTP 500</p>
+    <h1>页面发生错误</h1>
+    <p>服务器处理请求时发生错误，请稍后重试。</p>
+    @if (ShowRequestId)
+    {
+        <p class="muted">请求 ID：<code>@RequestId</code></p>
+    }
+    <div class="status-actions">
+        <a class="button" href="/">返回信息流</a>
+        <a class="button button-secondary" href="/search">搜索内容</a>
+    </div>
+</div>
+
+@code {
+    private string? RequestId { get; set; }
+
+    private bool ShowRequestId => !string.IsNullOrEmpty(RequestId);
+
+    protected override void OnInitialized()
+    {
+        RequestId = Activity.Current?.Id;
+    }
+}

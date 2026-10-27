@@ -1,0 +1,177 @@
+@page "/appeals"
+@attribute [Authorize]
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject AppealService AppealService
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>申诉 - WhalePod</PageTitle>
+
+<header class="page-masthead">
+    <p class="masthead-kicker">成员申诉</p>
+    <h1>处罚与内容驳回申诉</h1>
+    <p class="masthead-lead">可对被人工驳回的帖子/评论，或当前账号处罚提交一次待处理申诉。申诉不会自动解除处罚。</p>
+</header>
+
+@if (MessageText is not null)
+{
+    <p role="status">@MessageText</p>
+}
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+<section class="member-panel" aria-labelledby="appeal-submit-heading">
+    <h2 id="appeal-submit-heading">提交申诉</h2>
+    <form method="post" action="/appeals/submit">
+        <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+        <p>
+            <label for="appeal-target-type">目标类型</label>
+            <select id="appeal-target-type" name="targetType">
+                <option value="post">帖子</option>
+                <option value="comment">评论</option>
+                <option value="account_penalty">账号处罚</option>
+            </select>
+        </p>
+        <p>
+            <label for="appeal-target-id">帖子/评论 ID（账号处罚可留空）</label><br />
+            <input id="appeal-target-id" name="targetId" maxlength="36" autocomplete="off" />
+        </p>
+        <p>
+            <label for="appeal-reason">申诉理由（1-2000 字）</label><br />
+            <textarea id="appeal-reason" name="reason" rows="6" maxlength="2000" required></textarea>
+        </p>
+        <button type="submit">提交申诉</button>
+    </form>
+</section>
+
+<section class="member-panel" aria-labelledby="appeal-history-heading">
+    <h2 id="appeal-history-heading">我的申诉</h2>
+    @if (Items is null)
+    {
+        <p role="alert">无法加载申诉记录。</p>
+    }
+    else if (Items.Count == 0)
+    {
+        <div class="empty-state">
+            <h2>暂无申诉记录</h2>
+            <p>如有被驳回的帖子、评论或账号处罚，可在上方提交申诉。</p>
+        </div>
+    }
+    else
+    {
+        <div class="table-scroll" tabindex="0" role="region" aria-label="我的申诉记录">
+            <table class="appeals-table">
+                <caption>仅显示当前账号的申诉；复核说明由管理员填写。</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">目标</th>
+                        <th scope="col">理由</th>
+                        <th scope="col">状态</th>
+                        <th scope="col">复核说明</th>
+                        <th scope="col">提交时间</th>
+                        <th scope="col">处理时间</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var appeal in Items)
+                    {
+                        <tr>
+                            <td>@TargetLabel(appeal)</td>
+                            <td>@appeal.Reason</td>
+                            <td>@StatusLabel(appeal.Status)</td>
+                            <td>@(appeal.ReviewNote ?? "—")</td>
+                            <td>@DisplayFormat.Time(appeal.CreatedAt)</td>
+                            <td>@(appeal.ResolvedAt is null ? "—" : DisplayFormat.Time(appeal.ResolvedAt.Value))</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<p class="back-link">
+    <a href="/settings/profile">返回资料设置</a> ·
+    <a href="/">返回首页</a>
+</p>
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private IReadOnlyList<AppealView>? Items { get; set; }
+    private string Token { get; set; } = string.Empty;
+
+    private string? MessageText => Message switch
+    {
+        "submitted" => "申诉已提交，管理员复核后会通知你。",
+        _ => null
+    };
+
+    private string? ErrorText => Error switch
+    {
+        "target" => "目标类型或目标 ID 无效。",
+        "not-owner" => "只能申诉自己的内容或账号处罚。",
+        "not-rejected" => "只有被人工驳回的内容可以申诉。",
+        "duplicate" => "该目标已有待处理申诉。",
+        "conflict" => "目标状态不允许申诉，或已有待处理申诉。",
+        "reason" => "申诉理由必须为 1-2000 个字符。",
+        "forbidden" => "当前账号不能提交申诉。",
+        _ => null
+    };
+
+    private static string TargetLabel(AppealView appeal)
+    {
+        var type = appeal.TargetType switch
+        {
+            "post" => "帖子",
+            "comment" => "评论",
+            "account_penalty" => "账号处罚",
+            _ => appeal.TargetType
+        };
+        return appeal.TargetTitle is null ? type : $"{type}：{appeal.TargetTitle}";
+    }
+
+    private static string StatusLabel(string status)
+    {
+        return status switch
+        {
+            "pending" => "待处理",
+            "accepted" => "已通过",
+            "rejected" => "已驳回",
+            _ => status
+        };
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+
+        if (!Guid.TryParse(httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
+        {
+            StatusCodeResponse.Defer(httpContext, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        try
+        {
+            Items = await AppealService.GetMineAsync(userId);
+        }
+        catch (WhalePod.Infrastructure.Services.ApiProblemException)
+        {
+            StatusCodeResponse.Defer(httpContext, StatusCodes.Status403Forbidden);
+        }
+    }
+}

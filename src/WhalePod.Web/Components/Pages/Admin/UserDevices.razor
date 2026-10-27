@@ -1,0 +1,184 @@
+@page "/admin/users/{UserId:guid}/devices"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using System.Security.Claims
+@using WhalePod.Infrastructure.Services
+@inject DeviceVerificationService DeviceVerification
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>设备验证历史 - WhalePod</PageTitle>
+
+<h1>设备验证历史</h1>
+<p class="masthead-lead">该用户的设备、撤销状态与相关审计摘要。</p>
+
+
+<p>
+    <a href="/admin/users/@UserId">返回用户详情</a> ·
+    <a href="/admin/audit">审计日志</a>
+</p>
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+else if (History is not null)
+{
+    <section aria-labelledby="device-user-heading">
+        <h2 id="device-user-heading">用户</h2>
+        <dl>
+            <dt>Handle</dt>
+            <dd>@History.User.Handle</dd>
+            <dt>显示名</dt>
+            <dd>@History.User.DisplayName</dd>
+            <dt>账号状态</dt>
+            <dd>@History.User.Status</dd>
+            <dt>用户 ID</dt>
+            <dd><code>@History.User.Id</code></dd>
+            <dt>活跃设备</dt>
+            <dd>@History.ActiveDeviceCount</dd>
+        </dl>
+    </section>
+
+    <section aria-labelledby="device-list-heading">
+        <h2 id="device-list-heading">设备</h2>
+        @if (History.Devices.Count == 0)
+        {
+            <p class="muted">该用户没有设备记录。</p>
+        }
+        else
+        {
+            <div class="table-scroll" tabindex="0" role="region" aria-label="设备记录">
+                <table class="admin-device-table">
+                    <caption>最多展示 @AdminDeviceHistoryLimits.Devices 台设备；不展示私钥、令牌、邮箱或原始 IP。</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col">指纹</th>
+                            <th scope="col">平台 / 内核</th>
+                            <th scope="col">备注</th>
+                            <th scope="col">状态</th>
+                            <th scope="col">创建时间</th>
+                            <th scope="col">最近验证</th>
+                            <th scope="col">撤销</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var device in History.Devices)
+                        {
+                            <tr>
+                                <td class="device-fingerprint"><code>@device.Fingerprint</code></td>
+                                <td>@device.Platform<br /><span class="muted">@device.KernelVersion</span></td>
+                                <td>@(string.IsNullOrWhiteSpace(device.Label) ? "—" : device.Label)</td>
+                                <td>@(device.Status == "active" ? "活跃" : "已撤销")</td>
+                                <td>@DisplayFormat.Time(device.CreatedAt)</td>
+                                <td>@DisplayFormat.Time(device.LastVerifiedAt)</td>
+                                <td>
+                                    @if (device.RevokedAt is null)
+                                    {
+                                        <span>—</span>
+                                    }
+                                    else
+                                    {
+                                        <span>@DisplayFormat.Time(device.RevokedAt.Value)</span><br />
+                                        <span class="muted">操作者：@(device.RevokedByLabel ?? "—")</span>
+                                        @if (!string.IsNullOrWhiteSpace(device.RevokeReason))
+                                        {
+                                            <br /><span class="muted">原因：@device.RevokeReason</span>
+                                        }
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (History.DevicesTruncated)
+            {
+                <p role="status">设备记录超过 @AdminDeviceHistoryLimits.Devices 条，仅展示按状态与最近验证排序后的前 @AdminDeviceHistoryLimits.Devices 条。</p>
+            }
+        }
+    </section>
+
+    <section aria-labelledby="device-audit-heading">
+        <h2 id="device-audit-heading">相关审计摘要</h2>
+        @if (History.Events.Count == 0)
+        {
+            <p class="muted">该用户没有设备相关审计记录。</p>
+        }
+        else
+        {
+            <div class="table-scroll" tabindex="0" role="region" aria-label="设备相关审计摘要">
+                <table class="admin-audit-table">
+                    <caption>最近 @AdminDeviceHistoryLimits.Events 条设备审计摘要；不展示 IP 哈希、请求 ID 或原始元数据。</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col">时间</th>
+                            <th scope="col">事件</th>
+                            <th scope="col">操作者</th>
+                            <th scope="col">摘要</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var item in History.Events)
+                        {
+                            <tr>
+                                <td>@DisplayFormat.Time(item.CreatedAt)</td>
+                                <td>@item.ActionLabel<br /><span class="muted"><code>@item.Action</code></span></td>
+                                <td>@item.ActorLabel</td>
+                                <td>@(item.Detail ?? "—")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (History.EventsTruncated)
+            {
+                <p role="status">审计记录超过 @AdminDeviceHistoryLimits.Events 条，仅展示最近 @AdminDeviceHistoryLimits.Events 条。</p>
+            }
+        }
+    </section>
+
+    <p class="muted">
+        本页只展示设备公钥指纹、平台/内核（由用户本机上报）与验证/撤销结果；不展示私钥、令牌、邮箱、原始 IP 或完整审计元数据。
+        设备验证只证明用户持有对应设备密钥，不证明运行环境未被篡改。
+    </p>
+}
+
+@code {
+    [Parameter]
+    public Guid UserId { get; set; }
+
+    private AdminDeviceHistoryView? History { get; set; }
+    private string? ErrorText { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+        if (!Guid.TryParse(
+                httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier),
+                out var actorId))
+        {
+            StatusCodeResponse.Defer(httpContext, StatusCodes.Status403Forbidden);
+            ErrorText = "无权查看设备验证历史。";
+            return;
+        }
+
+        try
+        {
+            History = await DeviceVerification.GetAdminHistoryAsync(
+                actorId,
+                UserId,
+                httpContext.RequestAborted);
+        }
+        catch (ApiProblemException exception) when (exception.Code == ApiErrorCodes.NotFound)
+        {
+            StatusCodeResponse.NotFound(httpContext);
+            ErrorText = "用户不存在。";
+        }
+        catch (ApiProblemException exception) when (exception.Code == ApiErrorCodes.Forbidden)
+        {
+            StatusCodeResponse.Defer(httpContext, StatusCodes.Status403Forbidden);
+            ErrorText = "无权查看设备验证历史。";
+        }
+    }
+}

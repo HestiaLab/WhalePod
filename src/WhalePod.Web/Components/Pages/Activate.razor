@@ -1,0 +1,69 @@
+@page "/activate"
+@using Microsoft.AspNetCore.Antiforgery
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+@inject IWebHostEnvironment Environment
+
+<PageTitle>激活账号 - WhalePod</PageTitle>
+
+<div class="auth-shell">
+    <div class="auth-card">
+        <span class="auth-mark" aria-hidden="true"><WhaleMark /></span>
+        <h1>激活 WhalePod 账号</h1>
+
+        <AuthorizeView>
+            <Authorized>
+                @if (!string.IsNullOrWhiteSpace(Error))
+                {
+                    <p role="alert">邀请码无效、已过期、已用尽，或当前账号不可激活。请检查后重试。</p>
+                }
+
+                <p class="auth-lead">兑换邀请码后才能发帖、评论、点赞和进行设备验证。</p>
+
+                <form method="post" action="/activate/redeem">
+                    <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                    <p>
+                        <label for="code">邀请码</label><br />
+                        <input id="code" name="code" autocomplete="off" maxlength="200" required />
+                    </p>
+                    <button type="submit">兑换并激活</button>
+                </form>
+
+                <form method="post" action="/logout">
+                    <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                    <button type="submit" class="button-secondary">退出登录</button>
+                </form>
+            </Authorized>
+            <NotAuthorized>
+                @if (Error == "login_disabled")
+                {
+                    <p role="alert">站点当前已关闭新登录，请稍后再试或联系管理员。</p>
+                }
+                <p class="auth-lead">请先登录后再兑换邀请码。</p>
+                <p><a class="button" href="/login?returnUrl=%2Factivate">前往登录</a></p>
+                @if (Environment.IsDevelopment())
+                {
+                    <p><a href="/dev/test-login?handle=alice">使用开发测试身份登录</a></p>
+                }
+            </NotAuthorized>
+        </AuthorizeView>
+    </div>
+</div>
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private string Token { get; set; } = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        var context = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+
+        Token = Antiforgery.GetAndStoreTokens(context).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+    }
+}

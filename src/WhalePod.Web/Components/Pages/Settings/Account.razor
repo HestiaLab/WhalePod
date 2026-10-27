@@ -1,0 +1,109 @@
+@page "/settings/account"
+@attribute [Authorize]
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject ProfileSettingsService ProfileSettings
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>注销账号 - WhalePod</PageTitle>
+
+<header class="page-masthead settings-masthead">
+    <p class="masthead-kicker">账户设置</p>
+    <h1>注销账号</h1>
+    <p class="masthead-lead">注销会清除邮箱与 GitHub 绑定，并立即结束当前会话。</p>
+    <SettingsNav />
+</header>
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+@if (ProfileData is null)
+{
+    <p role="alert">无法加载当前账号。</p>
+}
+else
+{
+    <section aria-labelledby="delete-impact-heading">
+        <h2 id="delete-impact-heading">注销影响</h2>
+        <ul>
+            <li>注销后账号不能登录，会话立即失效；邮箱与 GitHub 绑定会被清除。</li>
+            <li>默认匿名化保留你已发布的帖子与评论，作者显示为“已注销用户”。</li>
+            <li>也可以选择同时删除你的帖子和评论；删除不可恢复。</li>
+            <li>审计日志、举报记录等依法需保留的数据按保留策略继续保存。</li>
+            <li>账号设备会被撤销；安全类邮件仍可能作为注销确认发送。</li>
+        </ul>
+        <p>当前 handle：<strong>@ProfileData.Handle</strong></p>
+    </section>
+
+    <form class="danger-zone" method="post" action="/settings/account/delete">
+        <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+        <h2>确认注销</h2>
+        <p class="muted">这一步不可逆；请先确认 handle 与删除范围。</p>
+        <p>
+            <label>
+                <input type="checkbox" name="deleteContent" value="true" />
+                同时删除我的帖子与评论（不勾选则匿名化保留）
+            </label>
+        </p>
+        <p>
+            <label for="confirm-handle">输入当前 handle 以确认</label><br />
+            <input id="confirm-handle" name="confirmHandle" required autocomplete="off"
+                   maxlength="32" />
+        </p>
+        <p>
+            <label>
+                <input type="checkbox" name="confirmPermanent" value="true" required />
+                我了解此操作不可恢复
+            </label>
+        </p>
+        <button type="submit" class="button-danger">永久注销账号</button>
+    </form>
+
+    <p>
+        <a href="/settings/profile">返回资料设置</a> ·
+        <a href="/appeals">处罚/驳回申诉</a> ·
+        <a href="/">返回首页</a>
+    </p>
+}
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private ProfileEditData? ProfileData { get; set; }
+    private string Token { get; set; } = string.Empty;
+
+    private string? ErrorText => Error switch
+    {
+        "confirm" => "请输入当前 handle 并勾选确认。",
+        "last-admin" => "不能注销最后一个有效管理员账号。",
+        "conflict" => "账号状态已不允许注销。",
+        "invalid" => "注销请求无效，请重试。",
+        _ => null
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+
+        if (!Guid.TryParse(httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
+        {
+            StatusCodeResponse.Defer(httpContext, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        ProfileData = await ProfileSettings.GetProfileAsync(userId);
+        if (ProfileData is null)
+        {
+            StatusCodeResponse.NotFound(httpContext);
+        }
+    }
+}

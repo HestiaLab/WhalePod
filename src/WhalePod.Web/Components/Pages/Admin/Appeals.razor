@@ -1,0 +1,137 @@
+@page "/admin/appeals"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject AppealService AppealService
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>申诉复核 - WhalePod</PageTitle>
+
+<h1>申诉复核</h1>
+
+
+<p>
+    <a href="/">返回首页</a> ·
+    <a href="/admin/audit">审计日志</a>
+</p>
+
+@if (MessageText is not null)
+{
+    <p role="status">@MessageText</p>
+}
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+@if (Items is null)
+{
+    <p role="alert">无法加载申诉队列。</p>
+}
+else if (Items.Count == 0)
+{
+        <div class="empty-state">
+            <h2>暂无待处理申诉</h2>
+            <p>成员提交的新申诉会出现在这里。</p>
+        </div>
+}
+else
+{
+    <div class="table-scroll" tabindex="0" role="region" aria-label="待处理申诉">
+        <table class="admin-appeal-table">
+            <caption>待处理申诉；通过后按目标恢复内容或解除账号处罚，并通知申诉人。</caption>
+            <thead>
+                <tr>
+                    <th scope="col">申诉人</th>
+                    <th scope="col">目标</th>
+                    <th scope="col">理由</th>
+                    <th scope="col">提交时间</th>
+                    <th scope="col">复核</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var appeal in Items)
+                {
+                    <tr>
+                        <td>@appeal.AppellantDisplayName（@appeal.AppellantHandle）</td>
+                        <td>@TargetLabel(appeal)</td>
+                        <td>@appeal.Reason</td>
+                        <td>@DisplayFormat.Time(appeal.CreatedAt)</td>
+                        <td>
+                            <form method="post" action="/admin/appeals/@appeal.Id/review">
+                                <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                                <label for="outcome-@appeal.Id">结论</label>
+                                <select id="outcome-@appeal.Id" name="outcome">
+                                    <option value="accepted">通过并恢复</option>
+                                    <option value="rejected">驳回申诉</option>
+                                </select>
+                                <label for="note-@appeal.Id">复核说明</label>
+                                <textarea id="note-@appeal.Id" name="note" rows="3" maxlength="1000" required></textarea>
+                                <button type="submit">提交复核</button>
+                            </form>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private IReadOnlyList<AdminAppealView>? Items { get; set; }
+    private string Token { get; set; } = string.Empty;
+
+    private string? MessageText => Message switch
+    {
+        "reviewed" => "复核结果已保存并通知申诉人。",
+        _ => null
+    };
+
+    private string? ErrorText => Error switch
+    {
+        "outcome" => "复核结论或说明无效。",
+        "conflict" => "申诉已处理或目标状态已变化。",
+        "self" => "不能复核自己的申诉。",
+        "missing" => "申诉或目标不存在。",
+        _ => null
+    };
+
+    private static string TargetLabel(AdminAppealView appeal)
+    {
+        var type = appeal.TargetType switch
+        {
+            "post" => "帖子",
+            "comment" => "评论",
+            "account_penalty" => "账号处罚",
+            _ => appeal.TargetType
+        };
+        return appeal.TargetTitle is null ? type : $"{type}：{appeal.TargetTitle}";
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+
+        if (!Guid.TryParse(httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
+        {
+            StatusCodeResponse.Defer(httpContext, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        Items = await AppealService.GetPendingAsync(userId);
+    }
+}

@@ -1,0 +1,211 @@
+@page "/"
+@layout PublicLayout
+@using Microsoft.AspNetCore.Components.Sections
+@using System.Text.Json
+@using WhalePod.Infrastructure.Services
+@using WhalePod.Web.Services
+@inject PublicContentService PublicContent
+@inject PublicSiteLinks SiteLinks
+
+<SeoHead Title="WhalePod（鲸群）— 可复现的 AI 工具实测社区"
+         Description="WhalePod 是面向 AI 工具使用者的邀请制技术社区，只收录可复现的实测记录与可直接复制的产物。"
+         CanonicalPath="@CanonicalPath"
+         ImageUrl="@null" />
+
+<JsonLd Json="@WebsiteJsonLd" />
+
+<SectionContent SectionName="PageHeader">
+    <header class="home-masthead">
+        <div>
+            <p class="masthead-kicker">鲸群 · 实测档案</p>
+            <h1>最新实测</h1>
+            <p class="masthead-lead">只收录可复现的 AI 工具实测记录与可直接复制的产物。环境、步骤、结果与失败都写在这里。</p>
+        </div>
+        <div class="masthead-side">
+            <a href="/rss.xml">RSS 订阅 <span class="arrow" aria-hidden="true">↗</span></a>
+            <a href="/tags">全部标签 <span class="arrow" aria-hidden="true">→</span></a>
+        </div>
+    </header>
+</SectionContent>
+
+<div class="feed-toolbar">
+    <nav class="tabs" aria-label="信息流排序">
+        @foreach (var option in SortOptions)
+        {
+            <a class="tab @(NormalizedSort == option.Key ? "active" : null)"
+               href="@FeedUrl(option.Key, Category, Tag, null)"
+               aria-current="@(NormalizedSort == option.Key ? "page" : null)">@option.Label</a>
+        }
+    </nav>
+    @if (Page is not null)
+    {
+        <span class="feed-count">本页 @Page.Items.Count 篇</span>
+    }
+</div>
+
+@if (Categories.Count > 0)
+{
+    <nav class="tabs category-tabs" aria-label="按板块筛选">
+        <a class="tab @(string.IsNullOrWhiteSpace(Category) ? "active" : null)"
+           href="@FeedUrl(NormalizedSort, null, Tag, null)">全部板块</a>
+        @foreach (var category in Categories)
+        {
+            <a class="tab @(string.Equals(Category, category.Slug, StringComparison.OrdinalIgnoreCase) ? "active" : null)"
+               href="@FeedUrl(NormalizedSort, category.Slug, Tag, null)">@category.Name</a>
+        }
+    </nav>
+}
+
+@if (!string.IsNullOrWhiteSpace(Tag))
+{
+    <p class="alert alert-info">当前按标签 <strong>@Tag</strong> 筛选。<a href="@FeedUrl(NormalizedSort, Category, null, null)">清除</a></p>
+}
+
+@if (ErrorMessage is not null)
+{
+    <p class="alert alert-error" role="alert">@ErrorMessage</p>
+}
+
+@if (Page is null)
+{
+    <p class="alert alert-error" role="alert">
+        信息流加载失败，请稍后重试。
+        <a href="@CanonicalPath">重试</a>
+    </p>
+}
+else if (Page.Items.Count == 0)
+{
+    <div class="empty-state">
+        <p class="masthead-kicker">暂无记录</p>
+        <h2>这片海域还没有记录</h2>
+        <p>暂无公开内容。可以切换板块或排序，或成为第一个发布实测的人。</p>
+        <div class="empty-state-actions">
+            <a class="button" href="/editor">写一篇实测</a>
+            <a class="button button-secondary" href="/tags">浏览标签</a>
+        </div>
+    </div>
+}
+else
+{
+    <div class="post-list home-feed">
+        @{
+            var postIndex = 0;
+        }
+        @foreach (var post in Page.Items)
+        {
+            <PostCard Post="post" Featured="@(postIndex++ == 0)" />
+        }
+    </div>
+
+    <nav class="pagination" aria-label="分页">
+        @if (!string.IsNullOrWhiteSpace(Page.NextCursor))
+        {
+            <a class="button button-secondary" href="@FeedUrl(NormalizedSort, Category, Tag, Page.NextCursor)">加载更多</a>
+        }
+        else
+        {
+            <span class="muted">已经到底了。</span>
+        }
+        <a href="/rss.xml">订阅 RSS</a>
+    </nav>
+}
+
+@code {
+    private static readonly (string Key, string Label)[] SortOptions =
+    [
+        ("latest", "最新"),
+        ("active", "最近活跃"),
+        ("unresolved", "待解决")
+    ];
+
+    [SupplyParameterFromQuery(Name = "sort")]
+    public string? Sort { get; set; }
+
+    [SupplyParameterFromQuery(Name = "category")]
+    public string? Category { get; set; }
+
+    [SupplyParameterFromQuery(Name = "tag")]
+    public string? Tag { get; set; }
+
+    [SupplyParameterFromQuery(Name = "cursor")]
+    public string? Cursor { get; set; }
+
+    private IReadOnlyList<CategoryView> Categories { get; set; } = [];
+    private FeedPage? Page { get; set; }
+    private string? ErrorMessage { get; set; }
+
+    private string NormalizedSort => SortOptions.Any(option =>
+        string.Equals(option.Key, Sort, StringComparison.OrdinalIgnoreCase))
+        ? Sort!.ToLowerInvariant()
+        : "latest";
+
+    private string CanonicalPath => FeedUrl(NormalizedSort, Category, Tag, null);
+
+    private string WebsiteJsonLd => JsonSerializer.Serialize(new Dictionary<string, object?>
+    {
+        ["@context"] = "https://schema.org",
+        ["@type"] = "WebSite",
+        ["name"] = "WhalePod（鲸群）",
+        ["url"] = SiteLinks.BaseUrl,
+        ["inLanguage"] = "zh-CN",
+        ["potentialAction"] = new Dictionary<string, object?>
+        {
+            ["@type"] = "SearchAction",
+            ["target"] = $"{SiteLinks.BaseUrl}/search?q={{search_term_string}}",
+            ["query-input"] = "required name=search_term_string"
+        }
+    });
+
+    protected override async Task OnInitializedAsync()
+    {
+        Categories = await PublicContent.GetCategoriesAsync();
+        if (Cursor?.Length > 512)
+        {
+            ErrorMessage = "分页游标过长。";
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(Sort) && NormalizedSort != Sort.Trim().ToLowerInvariant())
+        {
+            ErrorMessage = "排序参数无效，已显示最新内容。";
+        }
+
+        Page = await PublicContent.GetFeedAsync(
+            NormalizedSort,
+            Category,
+            Tag,
+            20,
+            Cursor);
+        if (Page.InvalidCursor)
+        {
+            ErrorMessage = "分页游标无效或与当前排序不匹配。";
+            Page = null;
+        }
+    }
+
+    private string FeedUrl(string? sort, string? category, string? tag, string? cursor)
+    {
+        var query = new List<string>();
+        if (!string.IsNullOrWhiteSpace(sort) && sort != "latest")
+        {
+            query.Add($"sort={Uri.EscapeDataString(sort)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(category))
+        {
+            query.Add($"category={Uri.EscapeDataString(category)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(tag))
+        {
+            query.Add($"tag={Uri.EscapeDataString(tag)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(cursor))
+        {
+            query.Add($"cursor={Uri.EscapeDataString(cursor)}");
+        }
+
+        return query.Count == 0 ? "/" : $"/?{string.Join("&", query)}";
+    }
+}

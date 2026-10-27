@@ -1,0 +1,299 @@
+@page "/admin/ai"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject AiSettingsService AiSettings
+@inject AiBudgetService AiBudget
+@inject AiQualityService AiQuality
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>AI 开关与模型配置 - WhalePod</PageTitle>
+
+<h1>AI 开关与模型配置</h1>
+
+
+<p>
+    <a href="/">返回首页</a> ·
+    <a href="/admin/service-accounts">服务账号</a>
+</p>
+
+@if (MessageText is not null)
+{
+    <p role="status">@MessageText</p>
+}
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+@if (Settings is null)
+{
+    <p role="alert">无法加载 AI 设置。</p>
+}
+else
+{
+    <dl>
+        <dt>AI/MCP</dt>
+        <dd>@(Settings.Enabled ? "已启用" : "已关闭（默认）")</dd>
+        <dt>建议生成</dt>
+        <dd>@(Settings.SuggestionsPaused ? "已暂停" : "正常")</dd>
+        <dt>每日 token 预算</dt>
+        <dd>@Settings.DailyTokenBudget</dd>
+        <dt>每日任务量预算</dt>
+        <dd>@Settings.DailyTaskBudget</dd>
+        <dt>每日内容量预算</dt>
+        <dd>@Settings.DailyContentBudget</dd>
+        <dt>质量告警最少裁决数</dt>
+        <dd>@Settings.QualityMinDecided</dd>
+        <dt>质量告警最低一致率</dt>
+        <dd>@Settings.QualityMinAgreement.ToString("0.00")</dd>
+    </dl>
+
+    @if (Budget is null)
+    {
+        <p class="muted">预算与熔断状态加载失败。</p>
+    }
+    else
+    {
+        <section aria-labelledby="ai-usage-heading">
+            <h2 id="ai-usage-heading">当日用量与熔断</h2>
+            <dl>
+                <dt>当日已用 token（UTC 日）</dt>
+                <dd>@Budget.UsedTokensToday / @Budget.DailyTokenBudget（剩余 @Budget.RemainingTokens）</dd>
+                <dt>当日建议数（任务量）</dt>
+                <dd>@Budget.TodaySuggestionCount / @Budget.DailyTaskBudget</dd>
+                <dt>当日生成任务（内容量）</dt>
+                <dd>@Budget.TodayCreatedTaskCount / @Budget.DailyContentBudget</dd>
+                <dt>预算状态</dt>
+                <dd>@(Budget.BlockingNewWork ? "已超限：新的 claim/suggestion 返回 429，人工审核不受影响" : "未超限")</dd>
+                <dt>失败熔断状态</dt>
+                <dd>
+                    @if (Budget.FailureCircuitOpen)
+                    {
+                        <span>已熔断：自上次成功建议以来近 @AiBudgetService.FailureWindowMinutes 分钟失败 @Budget.RecentFailures 次（过期租约/非法建议），claim/suggestion 返回 AGENT_DISABLED</span>
+                    }
+                    else
+                    {
+                        <span>正常（自上次成功建议以来近 @AiBudgetService.FailureWindowMinutes 分钟失败 @Budget.RecentFailures 次，阈值 @AiBudgetService.FailureThreshold 次）</span>
+                    }
+                </dd>
+                <dt>预算重置时间（UTC）</dt>
+                <dd>@Budget.ResetsAt.UtcDateTime.ToString("yyyy-MM-dd HH:mm")</dd>
+            </dl>
+            @if (Budget.BudgetExceeded)
+            {
+                <p class="alert alert-warning" role="alert">
+                    当日 token 预算已用尽，AI 审核暂停接收新任务；内容仍由人工审核，不会被自动裁决。
+                </p>
+            }
+            @if (Budget.TaskBudgetExceeded)
+            {
+                <p class="alert alert-warning" role="alert">
+                    当日任务量预算已用尽，新的 claim/suggestion 已暂停；请人工审核或等待 UTC 日重置。
+                </p>
+            }
+            @if (Budget.ContentBudgetExceeded)
+            {
+                <p class="alert alert-warning" role="alert">
+                    当日内容量预算已用尽，不再生成新的 AI 任务；已有任务与人工审核不受影响。
+                </p>
+            }
+            @if (Budget.FailureCircuitOpen)
+            {
+                <p class="alert alert-warning" role="alert">
+                    AI 审核已因连续失败熔断；熔断按 @AiBudgetService.FailureWindowMinutes 分钟滚动窗口自动恢复。
+                </p>
+            }
+            <p class="muted">
+                token 用量优先读取建议上报的 <code>tokenUsage.total</code>，缺失时累加数值字段；只统计当日真实建议记录，不记录正文或提示词。
+            </p>
+        </section>
+    }
+
+    <form method="post" action="/admin/ai/update">
+        <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+        <p>
+            <label>
+                <input type="checkbox" name="enabled" value="true" checked="@Settings.Enabled" />
+                启用 AI/MCP
+            </label>
+        </p>
+        <p>
+            <label>
+                <input type="checkbox" name="suggestionsPaused" value="true" checked="@Settings.SuggestionsPaused" />
+                暂停 AI 建议（保留心跳/策略读取，不生成新任务）
+            </label>
+        </p>
+        <p>
+            <label for="approved-models">批准模型（每行一个：名称|版本|量化版本）</label><br />
+            <textarea id="approved-models" name="models" rows="4" maxlength="2000">@ModelText</textarea>
+        </p>
+        <div class="form-grid">
+            <p>
+                <label for="daily-budget">每日 token 预算</label>
+                <input id="daily-budget" name="dailyTokenBudget" type="number"
+                       min="1" max="1000000000" value="@Settings.DailyTokenBudget" required />
+            </p>
+            <p>
+                <label for="daily-task-budget">每日任务量预算（建议数）</label>
+                <input id="daily-task-budget" name="dailyTaskBudget" type="number"
+                       min="1" max="1000000" value="@Settings.DailyTaskBudget" required />
+            </p>
+            <p>
+                <label for="daily-content-budget">每日内容量预算（生成任务数）</label>
+                <input id="daily-content-budget" name="dailyContentBudget" type="number"
+                       min="1" max="1000000" value="@Settings.DailyContentBudget" required />
+            </p>
+            <p>
+                <label for="quality-min-decided">质量告警最少裁决数（1-100000）</label>
+                <input id="quality-min-decided" name="qualityMinDecided" type="number"
+                       min="1" max="100000" value="@Settings.QualityMinDecided" required />
+            </p>
+            <p>
+                <label for="quality-min-agreement">质量告警最低一致率（0.10-1.00）</label>
+                <input id="quality-min-agreement" name="qualityMinAgreement" type="number"
+                       min="0.1" max="1" step="0.01" value="@Settings.QualityMinAgreement.ToString("0.00")" required />
+            </p>
+        </div>
+        <p>
+            <label>
+                <input type="checkbox" name="confirmEnable" value="true" />
+                我确认已完成 Q-02 模型选型与质量评估；启用或变更模型时必选
+            </label>
+        </p>
+        <button type="submit">保存 AI 设置</button>
+    </form>
+
+    <p>启用 AI 前必须至少配置一个非占位模型；关闭时所有 Agent 端点不可用，暂停时仅停止新任务与建议。</p>
+
+    <h2>Agent 与质量数据</h2>
+    <p>
+        Agent API 与本机 stdio MCP 已接入；默认关闭。启用后 Agent 只提交结构化建议，
+        内容仍需人工裁决。暂停时 heartbeat/policy/只读可用，claim/suggestion 返回 AGENT_DISABLED。
+    </p>
+    @if (Quality is null)
+    {
+        <p class="muted">质量统计加载失败。</p>
+    }
+    else if (Quality.Total == 0)
+    {
+        <p class="muted">暂无 AI 建议数据。服务账号与 Agent 见 <a href="/admin/service-accounts">服务账号</a>。</p>
+    }
+    else
+    {
+        <dl>
+            <dt>建议总数</dt>
+            <dd>@Quality.Total（待人工处理 @Quality.Pending）</dd>
+            <dt>人工已裁决</dt>
+            <dd>@Quality.Decided</dd>
+            <dt>采纳 / 覆盖</dt>
+            <dd>@Quality.Adopted / @Quality.Overridden</dd>
+            <dt>人工一致率</dt>
+            <dd>@((Quality.AgreementRate * 100).ToString("0.0"))%</dd>
+            @if (Quality.LastSuggestionAt is not null)
+            {
+                <dt>最近建议</dt>
+                <dd>@DisplayFormat.Time(Quality.LastSuggestionAt.Value)</dd>
+            }
+        </dl>
+        @if (Quality.QualityAlert)
+        {
+            <p class="alert alert-warning" role="alert">@Quality.QualityAlertText</p>
+        }
+        <div class="table-scroll" tabindex="0" role="region" aria-label="按建议类型的质量统计">
+            <table class="admin-ai-table">
+                <caption>按建议类型</caption>
+                <thead>
+                    <tr><th scope="col">类型</th><th scope="col">总数</th><th scope="col">已裁决</th><th scope="col">采纳</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var bucket in Quality.BySuggestion)
+                    {
+                        <tr>
+                            <td>@bucket.Key</td>
+                            <td>@bucket.Total</td>
+                            <td>@bucket.Decided</td>
+                            <td>@bucket.Adopted</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="按模型的质量统计">
+            <table class="admin-ai-table">
+                <caption>按模型（名称|版本|量化）</caption>
+                <thead>
+                    <tr><th scope="col">模型</th><th scope="col">总数</th><th scope="col">已裁决</th><th scope="col">采纳</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var bucket in Quality.ByModel)
+                    {
+                        <tr>
+                            <td>@bucket.Key</td>
+                            <td>@bucket.Total</td>
+                            <td>@bucket.Decided</td>
+                            <td>@bucket.Adopted</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    <p class="muted">统计来自真实 ModerationSuggestion 与人工裁决记录；不展示模型隐藏推理或用户正文。</p>
+}
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private AiSettingsData? Settings { get; set; }
+    private AiBudgetStatusView? Budget { get; set; }
+    private AiQualityStatsView? Quality { get; set; }
+    private string Token { get; set; } = string.Empty;
+
+    private string ModelText => Settings is null
+        ? string.Empty
+        : string.Join(
+            "\n",
+            Settings.ApprovedModels.Select(model => $"{model.Name}|{model.Version}|{model.Quantization}"));
+
+    private string? MessageText => Message switch
+    {
+        "saved" => "AI 设置已保存。",
+        "unchanged" => "AI 设置没有变化。",
+        _ => null
+    };
+
+    private string? ErrorText => Error switch
+    {
+        "confirm" => "启用 AI 或变更模型前必须确认已完成模型选型与质量评估。",
+        "models" => "模型配置无效：需要 1-10 个非占位模型，格式为 name|version|quantization。",
+        "budget" => "每日 token 预算必须在 1 到 1,000,000,000 之间。",
+        "task-budget" => "每日任务量预算必须在 1 到 1,000,000 之间。",
+        "content-budget" => "每日内容量预算必须在 1 到 1,000,000 之间。",
+        "quality" => "质量告警阈值无效：最少裁决数 1-100,000，最低一致率 0.10-1.00。",
+        "invalid" => "AI 设置参数无效。",
+        _ => null
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+        Settings = await AiSettings.GetAsync();
+        Budget = await AiBudget.GetAsync(Settings, httpContext.RequestAborted);
+        Quality = await AiQuality.GetAsync(
+            Settings.QualityMinDecided,
+            Settings.QualityMinAgreement,
+            httpContext.RequestAborted);
+    }
+}

@@ -1,0 +1,97 @@
+@page "/login"
+@using Microsoft.Extensions.Options
+@using WhalePod.Infrastructure.Services
+@using WhalePod.Web.Services
+@inject SiteModeService SiteMode
+@inject IOptions<GitHubOAuthOptions> GitHubOptions
+@inject IWebHostEnvironment Environment
+@inject IHttpContextAccessor HttpContextAccessor
+
+<SeoHead Title="登录 - WhalePod" Description="使用 GitHub 登录 WhalePod。" NoIndex="true" />
+
+<div class="auth-shell">
+    <div class="auth-card">
+        <span class="auth-mark" aria-hidden="true"><WhaleMark /></span>
+        <h1>登录 WhalePod</h1>
+
+        @if (ErrorText is not null)
+        {
+            <p role="alert">@ErrorText</p>
+        }
+
+        @if (LoginDisabled)
+        {
+            <p class="alert alert-warning" role="alert">
+                站点当前已关闭新登录。已有会话仍可继续使用；如需登录请联系管理员。
+            </p>
+        }
+        else if (!GitHubOptions.Value.IsConfigured)
+        {
+            <p class="alert alert-warning" role="alert">
+                GitHub OAuth 尚未配置，当前环境无法使用正式登录。
+            </p>
+        }
+        else
+        {
+            <p class="auth-lead">WhalePod 只支持 GitHub OAuth 登录，授权范围仅包含读取公开资料与已验证邮箱。</p>
+            <form method="get" action="/auth/github/start">
+                <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+                <button type="submit">使用 GitHub 登录</button>
+            </form>
+            <p class="muted">
+                首次登录会创建待激活账号；兑换邀请码后才能发帖、评论、点赞和进行设备验证。
+                本站不会把 GitHub 访问令牌写入浏览器存储。
+            </p>
+        }
+
+        @if (Environment.IsDevelopment())
+        {
+            <section class="auth-dev" aria-labelledby="dev-login-heading">
+                <h2 id="dev-login-heading">开发登录</h2>
+                <p class="muted">仅 Development 启用，生产环境不提供。</p>
+                <ul>
+                    <li><a href="/dev/test-login?handle=alice">以管理员 alice 登录</a></li>
+                    <li><a href="/dev/test-login?handle=bob">以成员 bob 登录</a></li>
+                </ul>
+            </section>
+        }
+
+        @if (HttpContextAccessor.HttpContext?.User.Identity?.IsAuthenticated == true)
+        {
+            <p class="back-link"><a href="/">返回首页</a> · <a href="/settings/profile">资料设置</a></p>
+        }
+    </div>
+</div>
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? ReturnUrl { get; set; }
+
+    private bool LoginDisabled { get; set; }
+
+    private string SafeReturnUrl =>
+        GitHubOAuthService.IsSafeReturnUrl(ReturnUrl) ? ReturnUrl! : "/";
+
+    private string? ErrorText => Error switch
+    {
+        "login_disabled" => "站点已关闭新登录。",
+        "not_allowed" => "当前 GitHub 账号不在允许登录名单或组织中。",
+        "account_banned" => "账号已被封禁，不能登录。",
+        "account_deleted" => "账号已注销，不能登录。",
+        "account_inactive" => "账号状态不允许登录。",
+        "state" => "登录请求已过期或 state 校验失败，请重新登录。",
+        "oauth_denied" => "你取消了 GitHub 授权。",
+        "oauth_exchange" or "oauth_unavailable" => "暂时无法连接 GitHub，请稍后重试。",
+        "oauth_profile" or "oauth_signin" => "无法读取 GitHub 账号资料，请稍后重试。",
+        "oauth_unconfigured" => "GitHub OAuth 尚未配置。",
+        _ => null
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        LoginDisabled = await SiteMode.IsLoginDisabledAsync();
+    }
+}

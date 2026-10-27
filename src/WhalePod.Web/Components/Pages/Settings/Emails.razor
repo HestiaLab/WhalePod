@@ -1,0 +1,100 @@
+@page "/settings/emails"
+@attribute [Authorize]
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject ProfileSettingsService ProfileSettings
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>邮件偏好 - WhalePod</PageTitle>
+
+<header class="page-masthead settings-masthead">
+    <p class="masthead-kicker">账户设置</p>
+    <h1>邮件偏好</h1>
+    <p class="masthead-lead">控制非安全类邮件；账号与安全邮件始终发送。</p>
+    <SettingsNav />
+</header>
+
+@if (MessageText is not null)
+{
+    <p role="status">@MessageText</p>
+}
+
+@if (Preferences is null)
+{
+    <p role="alert">无法加载当前账号的邮件偏好。</p>
+}
+else
+{
+    <form method="post" action="/settings/emails/update">
+        <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+        <fieldset class="preference-list">
+            <legend>邮件类型</legend>
+            <label class="preference-row" for="email-replies">
+                <span class="preference-copy">
+                    <span class="preference-title">回复与提及</span>
+                    <span class="preference-desc">有人回复你的帖子或评论，或在评论中提及你。</span>
+                </span>
+                <input id="email-replies" type="checkbox" name="repliesMentions" value="true"
+                       checked="@Preferences.RepliesMentions" />
+            </label>
+            <label class="preference-row" for="email-moderation">
+                <span class="preference-copy">
+                    <span class="preference-title">审核结果</span>
+                    <span class="preference-desc">你提交的帖子或评论通过、驳回或需要补充时通知你。</span>
+                </span>
+                <input id="email-moderation" type="checkbox" name="moderationResults" value="true"
+                       checked="@Preferences.ModerationResults" />
+            </label>
+            <label class="preference-row is-disabled" for="email-security">
+                <span class="preference-copy">
+                    <span class="preference-title">账号与安全（不可关闭）</span>
+                    <span class="preference-desc">登录、设备、注销与安全风险相关邮件始终发送。</span>
+                </span>
+                <input id="email-security" type="checkbox" checked disabled />
+            </label>
+        </fieldset>
+        <button type="submit">保存邮件偏好</button>
+    </form>
+
+    <p class="muted">关闭非安全类邮件不影响站内通知；账号与安全邮件始终发送。</p>
+}
+
+<p><a href="/settings/profile">返回资料设置</a> · <a href="/">返回首页</a></p>
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? Message { get; set; }
+
+    private EmailPreferenceData? Preferences { get; set; }
+    private string Token { get; set; } = string.Empty;
+
+    private string? MessageText => Message switch
+    {
+        "updated" => "邮件偏好已更新。",
+        "unchanged" => "邮件偏好没有变化。",
+        _ => null
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+
+        if (!Guid.TryParse(httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
+        {
+            StatusCodeResponse.Defer(httpContext, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        Preferences = await ProfileSettings.GetEmailPreferencesAsync(userId);
+        if (Preferences is null)
+        {
+            StatusCodeResponse.NotFound(httpContext);
+        }
+    }
+}

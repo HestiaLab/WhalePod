@@ -1,0 +1,248 @@
+@page "/admin/reports"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject ReportService ReportSvc
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>举报处理 - WhalePod</PageTitle>
+
+<h1>举报处理</h1>
+
+
+@if (MessageText is not null)
+{
+    <p role="status">@MessageText</p>
+}
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+<section aria-labelledby="report-filter-heading">
+    <h2 id="report-filter-heading">筛选</h2>
+    <form method="get" action="/admin/reports">
+        <label for="report-status">状态</label>
+        <select id="report-status" name="status">
+            <option value="pending" selected="@(Status == "pending")">待处理</option>
+            <option value="resolved" selected="@(Status == "resolved")">已解决</option>
+            <option value="dismissed" selected="@(Status == "dismissed")">已驳回</option>
+        </select>
+        <button type="submit">筛选</button>
+        <a href="/admin/reports">重置</a>
+    </form>
+</section>
+
+@if (Page is null)
+{
+    <p role="alert">无法加载举报队列。</p>
+}
+else if (Page.Items.Count == 0)
+{
+    <div class="empty-state">
+        <h2>暂无符合条件的举报</h2>
+        <p>调整状态筛选，或等待新的举报。</p>
+    </div>
+}
+else
+{
+    <div class="table-scroll" tabindex="0" role="region" aria-label="举报队列">
+        <table class="admin-report-table">
+            <caption>举报人身份只对管理员展示；处理结果会通知举报人与目标作者。</caption>
+            <thead>
+                <tr>
+                    <th scope="col">举报</th>
+                    <th scope="col">目标</th>
+                    <th scope="col">时间 / 状态</th>
+                    <th scope="col">处理</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var report in Page.Items)
+                {
+                    <tr>
+                        <td>
+                            <strong>@ReasonLabel(report.Reason)</strong><br />
+                            <span class="muted">举报人：@report.Reporter.Handle</span>
+                            @if (!string.IsNullOrWhiteSpace(report.Detail))
+                            {
+                                <p>@report.Detail</p>
+                            }
+                        </td>
+                        <td>
+                            @TargetLabel(report)<br />
+                            <span class="muted">@report.TargetPreview</span><br />
+                            <a href="@TargetUrl(report)">查看目标</a>
+                        </td>
+                        <td>
+                            @DisplayFormat.Time(report.CreatedAt)<br />
+                            <span class="muted">@StatusLabel(report.Status)</span>
+                            @if (report.HandledAt is not null)
+                            {
+                                <br /><span class="muted">处理于 @DisplayFormat.Time(report.HandledAt.Value)</span>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(report.ResolutionNote))
+                            {
+                                <br /><span class="muted">备注：@report.ResolutionNote</span>
+                            }
+                        </td>
+                        <td>
+                            @if (report.Status == "pending")
+                            {
+                                <form method="post" action="/admin/reports/@report.Id/resolve"
+                                      onsubmit="return confirm('确认提交举报处理结果？该操作不可撤销。');">
+                                    <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                                    <p>
+                                        <label for="report-outcome-@report.Id">结论</label>
+                                        <select id="report-outcome-@report.Id" name="outcome" required>
+                                            <option value="resolved">解决</option>
+                                            <option value="dismissed">驳回举报</option>
+                                        </select>
+                                    </p>
+                                    <p>
+                                        <label for="report-note-@report.Id">处理备注（1-500 字）</label>
+                                        <textarea id="report-note-@report.Id" name="resolutionNote" rows="2" maxlength="500" required></textarea>
+                                    </p>
+                                    <p>
+                                        <label for="report-action-@report.Id">附加动作</label>
+                                        <select id="report-action-@report.Id" name="actionType">
+                                            <option value="">不执行动作</option>
+                                            @foreach (var action in ActionOptions(report.TargetType))
+                                            {
+                                                <option value="@action.Value">@action.Label</option>
+                                            }
+                                        </select>
+                                    </p>
+                                    <p>
+                                        <label for="report-action-reason-@report.Id">动作原因（执行动作时必填）</label>
+                                        <input id="report-action-reason-@report.Id" name="actionReason" maxlength="500" />
+                                    </p>
+                                    <p>
+                                        <label for="report-action-expiry-@report.Id">禁言到期（UTC，禁言必填）</label>
+                                        <input id="report-action-expiry-@report.Id" name="actionExpiresAt" type="datetime-local" />
+                                    </p>
+                                    <button type="submit">提交处理</button>
+                                </form>
+                            }
+                            else
+                            {
+                                <span class="muted">已处理</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    @if (Page.NextCursor is not null)
+    {
+        <p><a href="@NextPageUrl()">下一页</a></p>
+    }
+}
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? Status { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Cursor { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private AdminReportPage? Page { get; set; }
+    private string Token { get; set; } = string.Empty;
+
+    private string? MessageText => Message switch
+    {
+        "handled" => "举报处理结果已保存，并通知相关方。",
+        _ => null
+    };
+
+    private string? ErrorText => Error switch
+    {
+        "validation" => "处理参数无效：备注、动作原因或禁言到期时间不符合要求。",
+        "conflict" => "举报已处理或目标状态已变化。",
+        "missing" => "举报或目标不存在。",
+        "forbidden" => "当前账号无权处理该举报。",
+        _ => null
+    };
+
+    private static string ReasonLabel(string reason) => reason switch
+    {
+        "spam" => "垃圾广告",
+        "harassment" => "人身攻击",
+        "misclassified" => "分类错误",
+        "plagiarism" => "抄袭未注明",
+        _ => "其他"
+    };
+
+    private static string StatusLabel(string status) => status switch
+    {
+        "pending" => "待处理",
+        "resolved" => "已解决",
+        "dismissed" => "已驳回",
+        _ => status
+    };
+
+    private static string TargetLabel(AdminReportView report) => report.TargetType switch
+    {
+        "post" => "帖子",
+        "comment" => "评论",
+        "user" => "用户",
+        _ => report.TargetType
+    };
+
+    private static string TargetUrl(AdminReportView report) => report.TargetType switch
+    {
+        "post" or "comment" => $"/admin/moderation/{report.TargetType}/{report.TargetId}",
+        "user" => $"/admin/users/{report.TargetId}",
+        _ => "/admin/reports"
+    };
+
+    private static IEnumerable<(string Value, string Label)> ActionOptions(string targetType)
+    {
+        if (targetType != "user")
+        {
+            yield return ("content_hide", "隐藏内容");
+            yield return ("content_delete", "删除内容");
+        }
+
+        yield return ("user_mute", "禁言作者/用户");
+        yield return ("user_ban", "封禁作者/用户");
+    }
+
+    private string NextPageUrl()
+    {
+        var status = string.IsNullOrWhiteSpace(Status) ? "pending" : Status;
+        return $"/admin/reports?status={Uri.EscapeDataString(status)}&cursor={Uri.EscapeDataString(Page!.NextCursor!)}";
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+
+        if (!Guid.TryParse(httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier), out var actorId))
+        {
+            StatusCodeResponse.Defer(httpContext, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        Page = await ReportSvc.ListAsync(
+            actorId,
+            Status,
+            20,
+            Cursor,
+            httpContext.RequestAborted);
+    }
+}

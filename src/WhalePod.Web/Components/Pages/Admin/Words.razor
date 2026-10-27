@@ -1,0 +1,181 @@
+@page "/admin/moderation/words"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject SensitiveWordAdminService SensitiveWords
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>敏感词与机审策略 - WhalePod</PageTitle>
+
+<h1>敏感词与机审策略</h1>
+
+
+<p><a href="/">返回首页</a></p>
+
+@if (MessageText is not null)
+{
+    <p role="status">@MessageText</p>
+}
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+@if (List is null)
+{
+    <p role="alert">无法加载敏感词配置。</p>
+}
+else
+{
+    <section aria-labelledby="policy-heading">
+        <h2 id="policy-heading">命中动作策略</h2>
+        <p>当前策略：@(List.PolicyHit == "reject" ? "命中即拒绝" : "命中转人工")</p>
+        <form method="post" action="/admin/moderation/words/policy">
+            <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+            <p>
+                <label for="policy-hit">策略</label>
+                <select id="policy-hit" name="hit">
+                    <option value="manual" selected="@(List.PolicyHit == "manual")">命中转人工</option>
+                    <option value="reject" selected="@(List.PolicyHit == "reject")">命中即拒绝</option>
+                </select>
+            </p>
+            <button type="submit">保存策略</button>
+        </form>
+    </section>
+
+    <section aria-labelledby="create-word-heading">
+        <h2 id="create-word-heading">新增敏感词</h2>
+        <form method="post" action="/admin/moderation/words/create">
+            <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+            <p>
+                <label for="word-term">词条（1-100 字，大小写不敏感）</label><br />
+                <input id="word-term" name="term" maxlength="100" required autocomplete="off" />
+            </p>
+            <p>
+                <label for="word-action">命中动作</label>
+                <select id="word-action" name="action">
+                    <option value="manual">转人工</option>
+                    <option value="reject">拒绝</option>
+                </select>
+            </p>
+            <button type="submit">新增敏感词</button>
+        </form>
+    </section>
+
+    <section aria-labelledby="word-list-heading">
+        <h2 id="word-list-heading">敏感词列表</h2>
+        @if (List.Items.Count == 0)
+        {
+            <div class="empty-state">暂无敏感词。</div>
+        }
+        else
+        {
+            <div class="table-scroll" tabindex="0" role="region" aria-label="敏感词数据表">
+                <table class="admin-word-table">
+                    <caption>敏感词仅管理员可见；审计不记录词面。</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col">词条</th>
+                            <th scope="col">命中动作</th>
+                            <th scope="col">状态</th>
+                            <th scope="col">创建者</th>
+                            <th scope="col">创建时间</th>
+                            <th scope="col">更新时间</th>
+                            <th scope="col">编辑</th>
+                            <th scope="col">停用</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var word in List.Items)
+                        {
+                            <tr>
+                                <td>@word.Term</td>
+                                <td>@(word.Action == "reject" ? "拒绝" : "转人工")</td>
+                                <td>@(word.Status == "active" ? "启用" : "已停用")</td>
+                                <td>@(word.CreatedByHandle ?? "—")</td>
+                                <td>@DisplayFormat.Time(word.CreatedAt)</td>
+                                <td>@DisplayFormat.Time(word.UpdatedAt)</td>
+                                <td>
+                                    <form method="post" action="/admin/moderation/words/@word.Id/update">
+                                        <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                                        <label for="term-@word.Id">词条</label>
+                                        <input id="term-@word.Id" name="term" value="@word.Term" maxlength="100" required />
+                                        <label for="action-@word.Id">动作</label>
+                                        <select id="action-@word.Id" name="action">
+                                            <option value="manual" selected="@(word.Action == "manual")">转人工</option>
+                                            <option value="reject" selected="@(word.Action == "reject")">拒绝</option>
+                                        </select>
+                                        <button type="submit">保存</button>
+                                    </form>
+                                </td>
+                                <td>
+                                    @if (word.Status == "active")
+                                    {
+                                        <form method="post" action="/admin/moderation/words/@word.Id/disable">
+                                            <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                                            <label>
+                                                <input type="checkbox" name="confirmDisable" value="true" required />
+                                                确认停用
+                                            </label>
+                                            <button type="submit">停用</button>
+                                        </form>
+                                    }
+                                    else
+                                    {
+                                        <span>—</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+
+    <h2>机审结果</h2>
+    <p>内容安全供应商与机审结果管线尚未接入；本页只维护敏感词与命中策略，不展示原始机审响应。</p>
+}
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private SensitiveWordList? List { get; set; }
+    private string Token { get; set; } = string.Empty;
+
+    private string? MessageText => Message switch
+    {
+        "created" => "敏感词已新增。",
+        "updated" => "敏感词已更新。",
+        "disabled" => "敏感词已停用。",
+        "policy" => "命中策略已保存。",
+        "unchanged" => "没有需要变更的内容。",
+        _ => null
+    };
+
+    private string? ErrorText => Error switch
+    {
+        "duplicate" => "词条已存在（大小写不敏感）。",
+        "invalid" => "词条或命中动作无效。",
+        "confirm" => "请确认停用操作。",
+        "not-found" => "敏感词不存在。",
+        _ => null
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+        List = await SensitiveWords.GetAsync();
+    }
+}

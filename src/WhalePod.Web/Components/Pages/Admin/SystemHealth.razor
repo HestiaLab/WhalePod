@@ -1,0 +1,179 @@
+@page "/admin/system"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using WhalePod.Infrastructure.Services
+@inject SystemHealthService HealthService
+
+<PageTitle>系统健康 - WhalePod</PageTitle>
+
+<h1>系统健康</h1>
+
+
+<p>
+    <a href="/">返回首页</a> ·
+    <a href="/admin/audit">审计日志</a>
+</p>
+
+@if (Health is null)
+{
+    <p role="alert">健康检查尚未完成。</p>
+}
+else
+{
+    <p>检查时间（北京时间）：@DisplayFormat.Time(Health.CheckedAt)</p>
+
+    @if (Health.Warnings.Count > 0)
+    {
+        <section aria-labelledby="health-warnings-heading">
+            <h2 id="health-warnings-heading">异常与待配置项</h2>
+            <div class="alert alert-warning" role="alert">
+                <ul>
+                    @foreach (var warning in Health.Warnings)
+                    {
+                        <li>@warning</li>
+                    }
+                </ul>
+            </div>
+        </section>
+    }
+    else
+    {
+        <p role="status">未发现需要立即处理的异常。</p>
+    }
+
+    <section aria-labelledby="health-database-heading">
+        <h2 id="health-database-heading">数据库</h2>
+        <dl>
+            <dt>连接</dt>
+            <dd>@(Health.DatabaseReachable ? "可达" : "不可达")</dd>
+            <dt>已应用迁移</dt>
+            <dd>@Health.AppliedMigrations</dd>
+            <dt>待应用迁移</dt>
+            <dd>@Health.PendingMigrations</dd>
+        </dl>
+    </section>
+
+    <section aria-labelledby="health-email-heading">
+        <h2 id="health-email-heading">邮件队列</h2>
+        <dl>
+            <dt>待发送</dt>
+            <dd>@Health.EmailPending</dd>
+            <dt>发送中</dt>
+            <dd>@Health.EmailSending</dd>
+            <dt>失败</dt>
+            <dd>@Health.EmailFailed</dd>
+            <dt>已抑制</dt>
+            <dd>@Health.EmailSuppressed</dd>
+            <dt>已发送</dt>
+            <dd>@Health.EmailSent</dd>
+            <dt>最早积压时间（北京时间）</dt>
+            <dd>@DisplayFormat.Time(Health.OldestEmailBacklogAt)</dd>
+        </dl>
+        <p>API 发件箱 worker 使用租约与指数退避；失败可重试，硬退信进入抑制表。</p>
+    </section>
+
+    <section aria-labelledby="health-ai-heading">
+        <h2 id="health-ai-heading">AI 与 Agent</h2>
+        <dl>
+            <dt>AI/MCP</dt>
+            <dd>@(Health.AiEnabled ? "已启用" : "已关闭")</dd>
+            <dt>建议生成</dt>
+            <dd>@(Health.SuggestionsPaused ? "已暂停" : "正常")</dd>
+            <dt>批准模型数</dt>
+            <dd>@Health.ApprovedModelCount</dd>
+            <dt>在线 Agent</dt>
+            <dd>@Health.ActiveAgents</dd>
+            <dt>心跳超时 Agent</dt>
+            <dd>@Health.OfflineAgents</dd>
+            <dt>最后心跳（北京时间）</dt>
+            <dd>@DisplayFormat.Time(Health.LastAgentHeartbeatAt)</dd>
+            <dt>待领取/升级任务</dt>
+            <dd>@Health.ModerationTasksQueued</dd>
+            <dt>已领取任务</dt>
+            <dd>@Health.ModerationTasksClaimed</dd>
+            <dt>过期租约</dt>
+            <dd>@Health.ModerationTaskExpiredLeases</dd>
+            <dt>当日 token 用量（UTC 日）</dt>
+            <dd>@Health.AiTokensUsedToday / @Health.AiDailyTokenBudget</dd>
+            <dt>预算状态</dt>
+            <dd>@(Health.AiBudgetExceeded ? "token 已超限（阻断新 claim/suggestion）" : "token 未超限")</dd>
+            <dt>当日任务量 / 内容量</dt>
+            <dd>
+                @Health.AiTodaySuggestions / @Health.AiDailyTaskBudget（建议）·
+                @Health.AiTodayTasks / @Health.AiDailyContentBudget（任务）
+                @if (Health.AiTaskBudgetExceeded)
+                {
+                    <br /><span>任务量已超限</span>
+                }
+                @if (Health.AiContentBudgetExceeded)
+                {
+                    <br /><span>内容量已超限，停止生成新任务</span>
+                }
+            </dd>
+            <dt>失败熔断</dt>
+            <dd>
+                @if (Health.AiFailureCircuitOpen)
+                {
+                    <span>已熔断（自上次成功建议以来近 @AiBudgetService.FailureWindowMinutes 分钟失败 @Health.AiRecentFailures 次）</span>
+                }
+                else
+                {
+                    <span>正常（自上次成功建议以来近 @AiBudgetService.FailureWindowMinutes 分钟失败 @Health.AiRecentFailures 次）</span>
+                }
+            </dd>
+        </dl>
+        <p>Agent API 与本机 stdio MCP 默认关闭；AI 只建议、人工裁决，不自动通过/驳回。预算超限返回 429，失败熔断返回 AGENT_DISABLED，人工审核不受影响。</p>
+    </section>
+
+    <section aria-labelledby="health-moderation-heading">
+        <h2 id="health-moderation-heading">机审</h2>
+        <dl>
+            <dt>近 24 小时检查数</dt>
+            <dd>@Health.ModerationChecks24h</dd>
+            <dt>近 24 小时错误数</dt>
+            <dd>@Health.ModerationErrors24h</dd>
+            <dt>供应商</dt>
+            <dd>未配置</dd>
+        </dl>
+        <p>内容安全供应商与机审结果写入管线尚未接入。</p>
+    </section>
+
+    <section aria-labelledby="health-retention-heading">
+        <h2 id="health-retention-heading">保留期与清理</h2>
+        <dl>
+            <dt>通知超过保留期未清理</dt>
+            <dd>@Health.NotificationRetentionBacklog</dd>
+            <dt>已结束邮件超过保留期未清理</dt>
+            <dd>@Health.EmailRetentionBacklog</dd>
+            <dt>临时/已删除媒体待清理</dt>
+            <dd>@Health.MediaCleanupBacklog</dd>
+            <dt>过期设备 challenge</dt>
+            <dd>@Health.ExpiredChallenges</dd>
+            <dt>过期复制去重键</dt>
+            <dd>@Health.ExpiredCopyDedupes</dd>
+        </dl>
+        <p>清理 worker 由 API 进程运行；失败会记录结构化错误日志并在下个周期重试。</p>
+    </section>
+
+    <section aria-labelledby="health-ops-heading">
+        <h2 id="health-ops-heading">备份与存储</h2>
+        <dl>
+            <dt>备份状态文件</dt>
+            <dd>@(Health.BackupConfigured ? "已配置" : "未配置")</dd>
+            <dt>最近备份（北京时间）</dt>
+            <dd>@DisplayFormat.Time(Health.LastBackupAt)</dd>
+            <dt>对象存储</dt>
+            <dd>@(Health.StorageConfigured ? Health.StorageProvider : "未配置")</dd>
+        </dl>
+        <p>备份脚本与恢复演练步骤见 docs/design/production-readiness.md；本页不展示连接串、密钥或备份路径。</p>
+    </section>
+}
+
+@code {
+    private SystemHealthData? Health { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Health = await HealthService.GetAsync();
+    }
+}

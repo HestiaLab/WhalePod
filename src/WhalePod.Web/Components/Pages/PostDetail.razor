@@ -1,0 +1,578 @@
+@page "/posts/{PostId:guid}"
+@layout PublicLayout
+@using System.Security.Claims
+@using System.Text.Json
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@using WhalePod.Web.Services
+@inject PublicContentService PublicContent
+@inject ViewCounterService ViewCounter
+@inject AdminAccessService AdminAccess
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+@inject PublicSiteLinks SiteLinks
+
+@if (Post is null)
+{
+    <SeoHead Title="内容不存在 - WhalePod" Description="该内容不存在或当前不可见。" NoIndex="true" />
+    <div class="empty-state empty-state-illustrated">
+        <p class="eyebrow">SIGNAL LOST</p>
+        <h1>内容不存在</h1>
+        <p>该帖子不存在、已删除，或尚未公开。</p>
+        <div class="empty-state-actions">
+            <a class="button" href="/">返回信息流</a>
+            <a class="button button-secondary" href="/search">搜索内容</a>
+        </div>
+    </div>
+}
+else
+{
+    <SeoHead Title="@SeoTitle"
+             Description="@Post.Excerpt"
+             CanonicalPath="@CanonicalPath"
+             OpenGraphType="article"
+             ImageUrl="@Post.Images.FirstOrDefault()?.Url"
+             NoIndex="@(!PostIsPublic)"
+             PublishedAt="@Post.CreatedAt"
+             ModifiedAt="@Post.UpdatedAt" />
+    <JsonLd Json="@PostJsonLd" />
+
+    @if (MessageText is not null)
+    {
+        <p class="alert alert-success" role="status">@MessageText</p>
+    }
+
+    @if (ErrorText is not null)
+    {
+        <p class="alert alert-error" role="alert">@ErrorText</p>
+    }
+
+    @if (Post.ModerationStatus != "approved")
+    {
+        <div class="alert alert-warning">
+            <strong>当前内容状态：@StatusLabel(Post.ModerationStatus)</strong>
+            <p>仅作者与管理员可见；通过审核后才会出现在公开信息流与 RSS 中。</p>
+            @if (!string.IsNullOrWhiteSpace(Post.LatestModerationReason))
+            {
+                <p>最近审核理由：@Post.LatestModerationReason</p>
+            }
+        </div>
+    }
+
+    <article class="post-detail">
+        <header class="article-header">
+            <nav class="breadcrumb" aria-label="面包屑">
+                <a href="/">信息流</a>
+                <span aria-hidden="true">/</span>
+                <a href="/?category=@Uri.EscapeDataString(Post.Category.Slug)">@Post.Category.Name</a>
+            </nav>
+
+            <div class="article-kicker">
+                <a class="post-category" href="/?category=@Uri.EscapeDataString(Post.Category.Slug)">@Post.Category.Name</a>
+                <span class="meta-separator" aria-hidden="true"></span>
+                <time class="mono-meta" datetime="@(Post.CreatedAt.ToUniversalTime().ToString("O"))">@DisplayFormat.Time(Post.CreatedAt)</time>
+                @if (Post.IsSolved)
+                {
+                    <span class="badge badge-solved">已解决</span>
+                }
+            </div>
+
+            <h1>@Post.Title</h1>
+            <p class="article-lead">@Post.Excerpt</p>
+
+            <div class="article-byline">
+                <span class="avatar-initial avatar-initial-lg" aria-hidden="true">@PostAuthorInitial</span>
+                <div class="byline-copy">
+                    <a href="/users/@Post.Author.Handle">@Post.Author.DisplayName</a>
+                    <span>@("@" + Post.Author.Handle) · Lv@(Post.Author.TrustLevel)</span>
+                </div>
+                @if (Post.Author.Badge.Verified)
+                {
+                    <a class="badge badge-verified" href="/users/@Post.Author.Handle#device-badge">设备密钥已验证</a>
+                }
+            </div>
+
+            @if (Post.Tags.Count > 0)
+            {
+                <ul class="tag-list" aria-label="标签">
+                    @foreach (var tag in Post.Tags)
+                    {
+                        <li><a class="tag" href="/tags/@tag.Slug">@tag.Name</a></li>
+                    }
+                </ul>
+            }
+        </header>
+
+        <section class="article-meta-panel" aria-label="运行环境与互动数据">
+            <div class="meta-block">
+                <h2 class="meta-label">运行环境</h2>
+                <dl id="post-environment" class="env-list">
+                    @if (!string.IsNullOrWhiteSpace(Post.Environment.KernelVersion))
+                    {
+                        <div><dt>内核</dt><dd>@Post.Environment.KernelVersion</dd></div>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(Post.Environment.Platform))
+                    {
+                        <div><dt>平台</dt><dd>@Post.Environment.Platform</dd></div>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(Post.Environment.Model))
+                    {
+                        <div><dt>模型</dt><dd>@Post.Environment.Model</dd></div>
+                    }
+                    @if (!HasEnvironment)
+                    {
+                        <div><dt>环境</dt><dd>未标注</dd></div>
+                    }
+                </dl>
+                @if (HasEnvironment)
+                {
+                    <button type="button" class="button button-secondary button-compact" data-copy-target="post-environment">复制环境信息</button>
+                }
+            </div>
+            <div class="meta-block">
+                <h2 class="meta-label">互动数据</h2>
+                <dl class="stat-list">
+                    <div><dt>点赞</dt><dd>@Post.Counts.Likes</dd></div>
+                    <div><dt>浏览</dt><dd>@Post.Counts.Views</dd></div>
+                    <div><dt>复制</dt><dd>@Post.Counts.Copies</dd></div>
+                    <div><dt>评论</dt><dd>@Post.Counts.Comments</dd></div>
+                </dl>
+                <p class="mono-meta">最后活动 @DisplayFormat.Time(Post.LastActivityAt)</p>
+            </div>
+        </section>
+
+        <div class="post-body">
+            @((MarkupString)Post.BodyHtml)
+        </div>
+
+        @if (Post.Images.Count > 0)
+        {
+            <section class="article-section" aria-labelledby="post-images-heading">
+                <div class="section-head">
+                    <h2 id="post-images-heading">图片</h2>
+                </div>
+                <div class="post-gallery">
+                    @foreach (var image in Post.Images)
+                    {
+                        <figure>
+                            <img src="@image.Url" alt="@image.AltText" loading="lazy"
+                                 width="@image.Width" height="@image.Height" />
+                            @if (!string.IsNullOrWhiteSpace(image.AltText))
+                            {
+                                <figcaption>@image.AltText</figcaption>
+                            }
+                        </figure>
+                    }
+                </div>
+            </section>
+        }
+
+        @if (Post.Artifacts.Count > 0)
+        {
+            <section class="article-section" aria-labelledby="post-artifacts-heading">
+                <div class="section-head">
+                    <h2 id="post-artifacts-heading">产物</h2>
+                </div>
+                @foreach (var artifact in Post.Artifacts)
+                {
+                    var targetId = $"artifact-{artifact.Id}";
+                    <details class="artifact">
+                        <summary>
+                            <span class="artifact-summary-main">
+                                <span class="artifact-dot" aria-hidden="true"></span>
+                                <span class="artifact-name">@artifact.Name</span>
+                                <span class="artifact-kind">@artifact.Kind</span>
+                            </span>
+                            <span class="artifact-toggle" aria-hidden="true"></span>
+                        </summary>
+                        @if (!string.IsNullOrWhiteSpace(artifact.Note))
+                        {
+                            <p class="artifact-note">@artifact.Note</p>
+                        }
+                        @if (artifact.Kind is "shell" or "patch")
+                        {
+                            <p class="alert alert-warning">
+                                风险提示：先审查内容再执行，先备份；本站只展示纯文本，不执行产物。
+                            </p>
+                        }
+                        <div class="artifact-terminal">
+                            <div class="artifact-terminal-bar">
+                                <span class="mono-meta">@artifact.Kind</span>
+                                <span class="mono-meta">纯文本 · 不执行</span>
+                            </div>
+                            <pre id="@targetId"><code>@artifact.Content</code></pre>
+                        </div>
+                        <div class="artifact-actions">
+                            <button type="button" class="button-secondary"
+                                    data-copy-target="@targetId"
+                                    data-copy-artifact-id="@artifact.Id">复制产物</button>
+                            <span class="mono-meta">复制次数 @artifact.CopyCount</span>
+                        </div>
+                    </details>
+                }
+            </section>
+        }
+
+        <footer class="article-footer">
+            <div class="article-stats-line" aria-label="内容统计">
+                <span>点赞 @Post.Counts.Likes</span>
+                <span aria-hidden="true">·</span>
+                <span>浏览 @Post.Counts.Views</span>
+                <span aria-hidden="true">·</span>
+                <span>复制 @Post.Counts.Copies</span>
+                <span aria-hidden="true">·</span>
+                <span>最后活动 @DisplayFormat.Time(Post.LastActivityAt)</span>
+            </div>
+            @if (Post.Author.Badge.Verified)
+            {
+                <p class="article-verify-note">
+                    <a class="badge badge-verified" href="/users/@Post.Author.Handle#device-badge">设备密钥已验证</a>
+                    <span class="muted">只证明作者持有该设备密钥，不证明运行环境未被篡改。</span>
+                </p>
+            }
+        </footer>
+    </article>
+
+    <section class="comments" aria-labelledby="comments-heading">
+        <div class="comments-head">
+            <div>
+                <h2 id="comments-heading">评论（@Post.Counts.Comments）</h2>
+            </div>
+            @if (Post.ModerationStatus == "approved")
+            {
+                <nav class="tabs" aria-label="评论排序">
+                    <a class="tab @(NormalizedCommentSort == "latest" ? "active" : null)"
+                       href="@CommentSortUrl("latest")">最新</a>
+                    <a class="tab @(NormalizedCommentSort == "top" ? "active" : null)"
+                       href="@CommentSortUrl("top")">点赞最多</a>
+                </nav>
+            }
+        </div>
+
+        @if (Comments is null)
+        {
+            <div class="comment-callout muted">内容通过审核后显示评论。</div>
+        }
+        else if (Comments.InvalidCursor)
+        {
+            <p class="alert alert-error" role="alert">
+                评论分页游标无效。
+                <a href="@CommentPageUrl(null)">返回第一页</a>
+            </p>
+        }
+        else if (Comments.Items.Count == 0)
+        {
+            <div class="empty-state">
+                <h3>还没有公开评论</h3>
+                <p>欢迎补充实测细节，让下一位复现者少走一点弯路。</p>
+            </div>
+        }
+        else
+        {
+            @foreach (var comment in TopLevelComments)
+            {
+                @RenderComment(comment, 0)
+            }
+
+            @if (!string.IsNullOrWhiteSpace(Comments.NextCursor))
+            {
+                <nav class="pagination" aria-label="评论分页">
+                    <a class="button button-secondary"
+                       href="@CommentPageUrl(Comments.NextCursor)">加载更多评论</a>
+                </nav>
+            }
+        }
+
+        @if (IsAuthenticated && Post.ModerationStatus == "approved")
+        {
+            <form class="comment-form" method="post" action="/posts/@Post.Id/comments">
+                <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                <div class="comment-form-head">
+                    <h3>补充你的复现记录</h3>
+                </div>
+                @if (ReplyToComment is not null)
+                {
+                    <input type="hidden" name="parentId" value="@ReplyToComment.Id" />
+                    <p class="muted">
+                        回复 @ReplyToComment.Author.DisplayName 的评论
+                        <a href="@PostUrl">取消回复</a>
+                    </p>
+                }
+                <p>
+                    <label for="comment-body">评论正文（支持 Markdown，2-10,000 字）</label>
+                    <textarea id="comment-body" name="bodyMd" required maxlength="10000" rows="6"></textarea>
+                </p>
+                <div class="comment-form-actions">
+                    <button type="submit">提交评论</button>
+                    <span class="muted">提交后进入人工审核。</span>
+                </div>
+            </form>
+        }
+        else if (!IsAuthenticated)
+        {
+            <div class="comment-callout">
+                <p><a href="/login?returnUrl=@Uri.EscapeDataString(PostUrl)">登录</a>后可以评论；禁言或未激活账号不能评论。</p>
+            </div>
+        }
+    </section>
+
+    <p class="back-link"><a href="/">← 返回信息流</a></p>
+}
+
+@code {
+    [Parameter]
+    public Guid PostId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "sort")]
+    public string? CommentSort { get; set; }
+
+    [SupplyParameterFromQuery(Name = "replyTo")]
+    public string? ReplyTo { get; set; }
+
+    [SupplyParameterFromQuery(Name = "cursor")]
+    public string? CommentCursor { get; set; }
+
+    [SupplyParameterFromQuery(Name = "message")]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery(Name = "error")]
+    public string? Error { get; set; }
+
+    private PostDetailView? Post { get; set; }
+    private CommentPage? Comments { get; set; }
+    private string Token { get; set; } = string.Empty;
+    private bool IsAuthenticated { get; set; }
+    private Guid? ReplyToCommentId { get; set; }
+    private string NormalizedCommentSort => string.Equals(CommentSort, "top", StringComparison.OrdinalIgnoreCase)
+        ? "top"
+        : "latest";
+
+    private string PostUrl => $"/posts/{PostId}";
+
+    private string SeoTitle => Post is null ? "内容不存在 - WhalePod" : $"{Post.Title} - WhalePod";
+
+    private string CanonicalPath => $"/posts/{PostId}";
+
+    private bool PostIsPublic => Post?.ModerationStatus == "approved";
+
+    private string PostAuthorInitial => Initial(Post?.Author.DisplayName);
+
+    private bool HasEnvironment => Post is not null
+        && (!string.IsNullOrWhiteSpace(Post.Environment.KernelVersion)
+            || !string.IsNullOrWhiteSpace(Post.Environment.Platform)
+            || !string.IsNullOrWhiteSpace(Post.Environment.Model));
+
+    private string? MessageText => Message switch
+    {
+        "post-pending" => "帖子已提交，待审核通过后公开显示。",
+        "pending" => "评论已提交，待审核通过后公开显示。",
+        _ => null
+    };
+
+    private string? ErrorText => Error switch
+    {
+        "invalid" => "评论内容或回复目标无效。",
+        "muted" => "账号处于禁言状态，不能评论。",
+        "activation" => "账号尚未激活，不能评论。",
+        _ => null
+    };
+
+    private CommentView? ReplyToComment => ReplyToCommentId is null || Comments is null
+        ? null
+        : Comments.Items.FirstOrDefault(comment => comment.Id == ReplyToCommentId.Value);
+
+    private IReadOnlyList<CommentView> TopLevelComments
+    {
+        get
+        {
+            if (Comments is null)
+            {
+                return [];
+            }
+
+            var ids = Comments.Items.Select(comment => comment.Id).ToHashSet();
+            return Comments.Items
+                .Where(comment => comment.ParentId is null || !ids.Contains(comment.ParentId.Value))
+                .ToList();
+        }
+    }
+
+    private string CommentSortUrl(string sort)
+    {
+        return $"{PostUrl}?sort={Uri.EscapeDataString(sort)}";
+    }
+
+    private string CommentPageUrl(string? cursor)
+    {
+        var url = $"{PostUrl}?sort={Uri.EscapeDataString(NormalizedCommentSort)}";
+        if (!string.IsNullOrWhiteSpace(cursor))
+        {
+            url += $"&cursor={Uri.EscapeDataString(cursor)}";
+        }
+
+        return url;
+    }
+
+    private IEnumerable<CommentView> ChildrenOf(CommentView comment)
+    {
+        if (Comments is null)
+        {
+            yield break;
+        }
+
+        foreach (var child in Comments.Items.Where(candidate => candidate.ParentId == comment.Id))
+        {
+            yield return child;
+        }
+    }
+
+    private RenderFragment RenderComment(CommentView comment, int depth) => @<article class="comment" id="comment-@comment.Id">
+        <div class="comment-head">
+            <span class="avatar-initial" aria-hidden="true">@Initial(comment.Author.DisplayName)</span>
+            <div class="comment-byline">
+                <a href="/users/@comment.Author.Handle">@comment.Author.DisplayName</a>
+                <div class="comment-meta">
+                    <time datetime="@(comment.CreatedAt.ToUniversalTime().ToString("O"))">@DisplayFormat.Time(comment.CreatedAt)</time>
+                    @if (comment.IsAccepted)
+                    {
+                        <span class="accepted-badge">已采纳</span>
+                    }
+                    @if (comment.Author.Badge.Verified)
+                    {
+                        <a class="badge badge-verified" href="/users/@comment.Author.Handle#device-badge">设备密钥已验证</a>
+                    }
+                </div>
+            </div>
+            <div class="comment-actions">
+                <span>点赞 @comment.LikeCount</span>
+                @if (!comment.IsDeleted && IsAuthenticated && Post?.ModerationStatus == "approved")
+                {
+                    <a href="@($"{PostUrl}?replyTo={comment.Id}&sort={NormalizedCommentSort}#comment-{comment.Id}")">回复</a>
+                }
+            </div>
+        </div>
+        @if (comment.IsDeleted)
+        {
+            <p class="deleted-comment">该评论已删除。</p>
+        }
+        else
+        {
+            <div class="comment-body">@((MarkupString)(comment.BodyHtml ?? string.Empty))</div>
+        }
+        @if (depth < 6)
+        {
+            var children = ChildrenOf(comment).ToList();
+            if (children.Count > 0)
+            {
+                <div class="comment-children">
+                    @foreach (var child in children)
+                    {
+                        @RenderComment(child, depth + 1)
+                    }
+                </div>
+            }
+        }
+    </article>;
+
+    private string PostJsonLd => JsonSerializer.Serialize(new Dictionary<string, object?>
+    {
+        ["@context"] = "https://schema.org",
+        ["@type"] = "DiscussionForumPosting",
+        ["headline"] = Post?.Title,
+        ["description"] = Post?.Excerpt,
+        ["datePublished"] = Post?.CreatedAt.ToUniversalTime().ToString("O"),
+        ["dateModified"] = Post?.UpdatedAt.ToUniversalTime().ToString("O"),
+        ["author"] = new Dictionary<string, object?>
+        {
+            ["@type"] = "Person",
+            ["name"] = Post?.Author.DisplayName,
+            ["url"] = Post is null ? null : SiteLinks.Absolute($"/users/{Post.Author.Handle}")
+        },
+        ["image"] = Post?.Images
+            .Select(image => SiteLinks.AbsoluteMedia(image.Url))
+            .Where(url => url is not null)
+            .ToArray(),
+        ["url"] = SiteLinks.Absolute($"/posts/{PostId}"),
+        ["isPartOf"] = new Dictionary<string, object?>
+        {
+            ["@type"] = "WebSite",
+            ["url"] = SiteLinks.BaseUrl
+        }
+    });
+
+    protected override async Task OnInitializedAsync()
+    {
+        var http = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+        var viewerId = Guid.TryParse(
+            http.User.FindFirstValue(ClaimTypes.NameIdentifier),
+            out var parsedViewerId)
+            ? parsedViewerId
+            : (Guid?)null;
+        IsAuthenticated = http.User.Identity?.IsAuthenticated == true;
+        var viewerIsAdmin = viewerId is not null
+            && await AdminAccess.IsAdminAsync(viewerId.Value);
+        Post = await PublicContent.GetPostForViewerAsync(PostId, viewerId, viewerIsAdmin);
+        if (Post is null)
+        {
+            StatusCodeResponse.NotFound(http);
+            return;
+        }
+
+        if (IsAuthenticated)
+        {
+            Token = Antiforgery.GetAndStoreTokens(http).RequestToken
+                ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+        }
+
+        if (Guid.TryParse(ReplyTo, out var replyToId))
+        {
+            ReplyToCommentId = replyToId;
+        }
+
+        if (Post.ModerationStatus == "approved" && HttpMethods.IsGet(http.Request.Method))
+        {
+            if (await ViewCounter.RecordViewAsync(
+                    PostId,
+                    http.Connection.RemoteIpAddress?.ToString(),
+                    http.RequestAborted))
+            {
+                Post = Post with
+                {
+                    Counts = Post.Counts with { Views = Post.Counts.Views + 1 }
+                };
+            }
+
+            if (CommentCursor?.Length > 512)
+            {
+                Comments = new CommentPage([], null, true);
+                return;
+            }
+
+            Comments = await PublicContent.GetCommentsAsync(
+                PostId,
+                NormalizedCommentSort,
+                50,
+                CommentCursor);
+        }
+    }
+
+    private static string Initial(string? displayName)
+    {
+        return string.IsNullOrWhiteSpace(displayName)
+            ? "?"
+            : char.ToUpperInvariant(displayName.Trim()[0]).ToString();
+    }
+
+    private static string StatusLabel(string status)
+    {
+        return status switch
+        {
+            "pending" => "待审核",
+            "rejected" => "已驳回",
+            "hidden" => "已隐藏",
+            "deleted" => "已删除",
+            _ => status
+        };
+    }
+}

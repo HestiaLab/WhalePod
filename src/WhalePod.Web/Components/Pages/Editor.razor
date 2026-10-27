@@ -1,0 +1,227 @@
+@page "/editor"
+@layout MainLayout
+@attribute [Authorize]
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject PublicContentService PublicContent
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<SeoHead Title="写实测 - WhalePod（鲸群）"
+         Description="发布可复现的 AI 工具实测记录与产物。"
+         NoIndex="true" />
+
+<header class="page-masthead editor-masthead">
+    <p class="masthead-kicker">新建实测</p>
+    <h1>写一篇实测</h1>
+    <p class="masthead-lead">提交后进入人工审核；通过后才会出现在信息流、RSS 与搜索中。正文使用 Markdown，禁止原始 HTML。</p>
+    <div class="masthead-meta">
+        <span>Markdown</span>
+        <span>服务端预览</span>
+        <span>草稿保存在本机</span>
+    </div>
+</header>
+
+@if (ErrorMessage is not null)
+{
+    <p class="alert alert-error" role="alert">@ErrorMessage</p>
+}
+
+@if (Categories.Count == 0)
+{
+    <p class="alert alert-warning">当前没有可用板块，暂时不能发帖。</p>
+}
+else
+{
+    <div id="draft-banner" class="draft-banner panel" role="status" hidden>
+        <p>检测到未提交的本地草稿（<span id="draft-saved-at"></span>）。</p>
+        <div class="draft-banner-actions">
+            <button type="button" id="draft-resume">继续编辑</button>
+            <button type="button" id="draft-discard" class="button-secondary">丢弃草稿</button>
+        </div>
+    </div>
+
+    <form id="editor-form" class="editor-form" data-editor-form method="post" action="/editor/create">
+        <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+
+        <div class="editor-grid">
+            <div class="editor-main">
+                <section class="editor-panel" aria-labelledby="editor-title-heading">
+                    <div class="editor-panel-head">
+                        <h2 id="editor-title-heading">标题与板块</h2>
+                    </div>
+                    <p>
+                        <label for="editor-title">标题（8-200 字）</label>
+                        <input id="editor-title" name="title" minlength="8" maxlength="200" required
+                               placeholder="把实验结论写清楚，例如：在某环境下复现某工具的三步记录" />
+                    </p>
+                    <p>
+                        <label for="editor-category">板块</label>
+                        <select id="editor-category" name="categoryId" required>
+                            @foreach (var category in Categories)
+                            {
+                                <option value="@category.Id">@category.Name</option>
+                            }
+                        </select>
+                    </p>
+                </section>
+
+                <section class="editor-panel" aria-labelledby="editor-content-heading">
+                    <div class="editor-panel-head">
+                        <h2 id="editor-content-heading">正文</h2>
+                        <button type="button" id="editor-preview-toggle" class="button-secondary button-compact"
+                                aria-controls="editor-preview" aria-expanded="false">预览</button>
+                    </div>
+                    <p id="editor-preview-status" class="muted editor-preview-status" role="status" aria-live="polite"></p>
+                    <div id="editor-body-block">
+                        <label for="editor-body">正文（Markdown，10-60,000 字）</label>
+                        <textarea id="editor-body" name="bodyMd" rows="16" minlength="10" maxlength="60000" required
+                                  placeholder="说明实验目标、步骤、观察结果与结论；可以使用 Markdown。"></textarea>
+                    </div>
+                    <div id="editor-preview" class="editor-preview" aria-label="正文预览" hidden></div>
+                </section>
+            </div>
+
+            <aside class="editor-side" aria-label="发布设置">
+                <fieldset class="editor-panel">
+                    <legend>环境信息（可选）</legend>
+                    <div class="form-grid">
+                        <p>
+                            <label for="editor-kernel">内核</label>
+                            <input id="editor-kernel" name="kernel" maxlength="64" />
+                        </p>
+                        <p>
+                            <label for="editor-platform">平台</label>
+                            <select id="editor-platform" name="platform">
+                                <option value="">未填写</option>
+                                <option value="win32-x64">win32-x64</option>
+                                <option value="win32-arm64">win32-arm64</option>
+                                <option value="darwin-x64">darwin-x64</option>
+                                <option value="darwin-arm64">darwin-arm64</option>
+                                <option value="linux-x64">linux-x64</option>
+                                <option value="linux-arm64">linux-arm64</option>
+                            </select>
+                        </p>
+                        <p>
+                            <label for="editor-model">模型</label>
+                            <input id="editor-model" name="model" maxlength="100" />
+                        </p>
+                    </div>
+                </fieldset>
+
+                <fieldset class="editor-panel">
+                    <legend>标签（最多 6 个）</legend>
+                    @if (Tags.Count == 0)
+                    {
+                        <p class="muted">当前没有可用标签。</p>
+                    }
+                    else
+                    {
+                        <div class="tag-choices">
+                            @foreach (var tag in Tags)
+                            {
+                                <label class="tag-choice">
+                                    <input type="checkbox" name="tags" value="@tag.Slug" />
+                                    @tag.Name
+                                </label>
+                            }
+                        </div>
+                    }
+                </fieldset>
+
+                <fieldset class="editor-panel">
+                    <legend>已上传图片 ID（可选）</legend>
+                    <p class="muted editor-hint">
+                        通过 <code>POST /api/v1/uploads/images</code> 上传后，将以逗号分隔的上传 ID 填入此处；最多 10 张。
+                    </p>
+                    <p>
+                        <label for="editor-image-ids">图片上传 ID</label>
+                        <input id="editor-image-ids" name="imageIds" maxlength="400"
+                               placeholder="例如：018f...,018f..." />
+                    </p>
+                </fieldset>
+
+                <fieldset class="editor-panel">
+                    <legend>产物（可选，最多 1 份）</legend>
+                    <div class="form-grid">
+                        <p>
+                            <label for="editor-artifact-kind">类型</label>
+                            <select id="editor-artifact-kind" name="artifactKind">
+                                <option value="shell">shell</option>
+                                <option value="patch">patch</option>
+                                <option value="yaml">yaml</option>
+                                <option value="json">json</option>
+                                <option value="bundle">bundle</option>
+                                <option value="markdown">markdown</option>
+                            </select>
+                        </p>
+                        <p>
+                            <label for="editor-artifact-name">名称</label>
+                            <input id="editor-artifact-name" name="artifactName" maxlength="120" />
+                        </p>
+                        <p>
+                            <label for="editor-artifact-note">说明</label>
+                            <input id="editor-artifact-note" name="artifactNote" maxlength="200" />
+                        </p>
+                    </div>
+                    <p>
+                        <label for="editor-artifact-content">内容（纯文本）</label>
+                        <textarea id="editor-artifact-content" name="artifactContent" rows="6" maxlength="200000"></textarea>
+                    </p>
+                </fieldset>
+            </aside>
+        </div>
+
+        <div class="editor-actions">
+            <div>
+                <p class="muted">提交后进入人工审核；审核期间仍可在作者视角查看。</p>
+            </div>
+            <div class="editor-actions-buttons">
+                <button type="submit">提交审核</button>
+                <a class="button button-secondary" href="/">取消</a>
+            </div>
+        </div>
+    </form>
+}
+
+<p class="back-link"><a href="/">← 返回信息流</a></p>
+
+@code {
+    [SupplyParameterFromQuery(Name = "error")]
+    public string? Error { get; set; }
+
+    [SupplyParameterFromQuery(Name = "field")]
+    public string? Field { get; set; }
+
+    private IReadOnlyList<CategoryView> Categories { get; set; } = [];
+    private IReadOnlyList<TagView> Tags { get; set; } = [];
+    private string Token { get; set; } = string.Empty;
+
+    private string? ErrorMessage => Error switch
+    {
+        "auth" => "请先登录并激活账号。",
+        "muted" => "账号处于禁言状态，不能发帖。",
+        "banned" => "账号已被封禁，不能发帖。",
+        "validation" => $"提交内容不符合要求（字段：{Field ?? "未知"}）。",
+        "invalid" => "提交失败，请检查内容后重试。",
+        _ => null
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var http = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+        if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out _))
+        {
+            StatusCodeResponse.Defer(http, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        Token = Antiforgery.GetAndStoreTokens(http).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+        Categories = await PublicContent.GetCategoriesAsync();
+        var tagPage = await PublicContent.GetTagsAsync(50, null);
+        Tags = tagPage.Items;
+    }
+}

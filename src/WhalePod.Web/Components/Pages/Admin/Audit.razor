@@ -1,0 +1,267 @@
+@page "/admin/audit"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@using WhalePod.Web.Services
+@inject AuditAdminService AuditAdmin
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>审计日志 - WhalePod</PageTitle>
+
+<h1>审计日志</h1>
+
+
+<p><a href="/">返回首页</a> · <a href="/admin/appeals">申诉复核</a></p>
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+<section aria-labelledby="audit-filter-heading">
+    <h2 id="audit-filter-heading">筛选</h2>
+    <form class="filter-form" method="get" action="/admin/audit">
+        <p>
+            <label for="audit-from">开始日期（北京时间）</label>
+            <input id="audit-from" name="from" type="date" value="@FromDate.ToString("yyyy-MM-dd")" />
+        </p>
+        <p>
+            <label for="audit-to">结束日期（北京时间）</label>
+            <input id="audit-to" name="to" type="date" value="@ToDate.ToString("yyyy-MM-dd")" />
+        </p>
+        <p>
+            <label for="audit-actor">操作者 handle</label>
+            <input id="audit-actor" name="actor" value="@(Actor ?? string.Empty)" maxlength="32" autocomplete="off" />
+        </p>
+        <p>
+            <label for="audit-action">动作前缀</label>
+            <input id="audit-action" name="action" value="@(Action ?? string.Empty)" maxlength="100" autocomplete="off" />
+        </p>
+        <p>
+            <label for="audit-target-type">目标类型</label>
+            <input id="audit-target-type" name="targetType" value="@(TargetType ?? string.Empty)" maxlength="40" autocomplete="off" />
+        </p>
+        <p>
+            <label for="audit-target-id">目标 ID</label>
+            <input id="audit-target-id" name="targetId" value="@(TargetId ?? string.Empty)" maxlength="36" autocomplete="off" />
+        </p>
+        <div class="form-actions">
+            <button type="submit">查询</button>
+            <a href="/admin/audit">重置</a>
+        </div>
+    </form>
+</section>
+
+<section aria-labelledby="audit-list-heading">
+    <h2 id="audit-list-heading">结果</h2>
+
+    @if (Result.Items.Count == 0)
+    {
+        <div class="empty-state">没有符合条件的审计记录。</div>
+    }
+    else
+    {
+        <div class="table-scroll" tabindex="0" role="region" aria-label="审计记录">
+            <table class="admin-audit-table">
+                <caption>共 @Result.TotalCount 条；第 @Result.Page 页；时间为北京时间。</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">时间</th>
+                        <th scope="col">操作者</th>
+                        <th scope="col">动作</th>
+                        <th scope="col">目标</th>
+                        <th scope="col">请求 ID</th>
+                        <th scope="col">详情</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in Result.Items)
+                    {
+                        <tr>
+                            <td>@DisplayFormat.Time(item.CreatedAt)</td>
+                            <td>@ActorText(item)</td>
+                            <td><code>@item.Action</code></td>
+                            <td title="@FullTarget(item)">@ShortTarget(item)</td>
+                            <td title="@item.RequestId">@Short(item.RequestId, 12)</td>
+                            <td><a href="/admin/audit/@item.Id">查看</a></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    <nav aria-label="分页">
+        @if (Result.Page > 1)
+        {
+            <a href="@PageUrl(Result.Page - 1)">上一页</a>
+        }
+        @if (Result.Page * Result.PageSize < Result.TotalCount)
+        {
+            <a href="@PageUrl(Result.Page + 1)">下一页</a>
+        }
+    </nav>
+</section>
+
+@if (Filter is not null)
+{
+    <section aria-labelledby="audit-export-heading">
+        <h2 id="audit-export-heading">导出</h2>
+        <form method="post" action="/admin/audit/export">
+            <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+            <input type="hidden" name="from" value="@FromDate.ToString("yyyy-MM-dd")" />
+            <input type="hidden" name="to" value="@ToDate.ToString("yyyy-MM-dd")" />
+            <input type="hidden" name="actor" value="@(Actor ?? string.Empty)" />
+            <input type="hidden" name="action" value="@(Action ?? string.Empty)" />
+            <input type="hidden" name="targetType" value="@(TargetType ?? string.Empty)" />
+            <input type="hidden" name="targetId" value="@(TargetId ?? string.Empty)" />
+            <button type="submit">导出 CSV（最长 31 天）</button>
+        </form>
+        <p>CSV 不包含 IP/UA 哈希；元数据中的敏感字段会脱敏。</p>
+    </section>
+}
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? From { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? To { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Actor { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Action { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? TargetType { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? TargetId { get; set; }
+
+    [SupplyParameterFromQuery]
+    public int Page { get; set; } = 1;
+
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private AuditFilter? Filter { get; set; }
+    private AuditListResult Result { get; set; } = new([], 0, 1, AuditAdminService.PageSize);
+    private DateOnly FromDate { get; set; }
+    private DateOnly ToDate { get; set; }
+    private string? BuildError { get; set; }
+    private string Token { get; set; } = string.Empty;
+
+    private string? ErrorText => (Error, BuildError) switch
+    {
+        ("range-too-large", _) => "导出时间范围不能超过 31 天。",
+        ("invalid-date", _) or (_, "invalid-date") => "日期格式无效。",
+        ("invalid-range", _) or (_, "invalid-range") => "开始日期不能晚于结束日期。",
+        ("invalid-target", _) or (_, "invalid-target") => "目标 ID 必须是 UUID。",
+        _ => null
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+
+        var today = AuditFilterBuilder.TodayInChina();
+        var built = AuditFilterBuilder.Build(
+            new AuditFilterInput(From, To, Actor, Action, TargetType, TargetId),
+            today.AddDays(-6),
+            today);
+
+        FromDate = built.FromDate;
+        ToDate = built.ToDate;
+        BuildError = built.Error;
+
+        if (built.Filter is null)
+        {
+            return;
+        }
+
+        Filter = built.Filter;
+        Result = await AuditAdmin.ListAsync(Filter, Page);
+    }
+
+    private string PageUrl(int page)
+    {
+        var query = new List<string>
+        {
+            $"page={page}",
+            $"from={FromDate.ToString("yyyy-MM-dd")}",
+            $"to={ToDate.ToString("yyyy-MM-dd")}"
+        };
+
+        if (!string.IsNullOrWhiteSpace(Actor))
+        {
+            query.Add($"actor={Uri.EscapeDataString(Actor)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(Action))
+        {
+            query.Add($"action={Uri.EscapeDataString(Action)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(TargetType))
+        {
+            query.Add($"targetType={Uri.EscapeDataString(TargetType)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(TargetId))
+        {
+            query.Add($"targetId={Uri.EscapeDataString(TargetId)}");
+        }
+
+        return "/admin/audit?" + string.Join("&", query);
+    }
+
+    private static string ActorText(AuditListItem item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.ActorHandle))
+        {
+            return item.ActorHandle;
+        }
+
+        return item.ActorId is null ? item.ActorType : $"{item.ActorType}:{item.ActorId}";
+    }
+
+    private static string FullTarget(AuditListItem item)
+    {
+        if (string.IsNullOrWhiteSpace(item.TargetType))
+        {
+            return "—";
+        }
+
+        return item.TargetId is null ? item.TargetType : $"{item.TargetType}:{item.TargetId}";
+    }
+
+    private static string ShortTarget(AuditListItem item)
+    {
+        if (string.IsNullOrWhiteSpace(item.TargetType))
+        {
+            return "—";
+        }
+
+        return item.TargetId is null
+            ? item.TargetType
+            : $"{item.TargetType}:{item.TargetId.Value.ToString("N")[..8]}";
+    }
+
+    private static string Short(string? value, int length)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "—";
+        }
+
+        return value.Length <= length ? value : value[..length] + "…";
+    }
+}

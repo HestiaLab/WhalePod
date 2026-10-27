@@ -1,0 +1,192 @@
+@page "/admin/users/{UserId:guid}"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject AdminUserService Users
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>用户详情 - WhalePod</PageTitle>
+
+<h1>用户详情</h1>
+@if (User is not null)
+{
+    <p class="masthead-lead">@User.DisplayName · @User.Handle</p>
+}
+
+
+@if (MessageText is not null)
+{
+    <p role="status">@MessageText</p>
+}
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+@if (User is null)
+{
+    <p role="alert">用户不存在。</p>
+    <p><a href="/admin/users">返回用户列表</a></p>
+}
+else
+{
+    <p><a href="/admin/users">返回用户列表</a></p>
+
+    <dl>
+        <dt>Handle</dt>
+        <dd><a href="/users/@User.Handle">@User.Handle</a></dd>
+        <dt>显示名</dt>
+        <dd>@User.DisplayName</dd>
+        <dt>用户 ID</dt>
+        <dd><code>@User.Id</code></dd>
+        <dt>状态</dt>
+        <dd>@StatusLabel(User.Status)</dd>
+        @if (!string.IsNullOrWhiteSpace(User.StatusReason))
+        {
+            <dt>状态原因</dt>
+            <dd>@User.StatusReason</dd>
+        }
+        @if (User.StatusExpiresAt is not null)
+        {
+            <dt>状态到期</dt>
+            <dd>@DisplayFormat.Time(User.StatusExpiresAt.Value)</dd>
+        }
+        <dt>角色</dt>
+        <dd>@(User.Role == "admin" ? "管理员" : "成员")</dd>
+        <dt>信任等级</dt>
+        <dd>@User.TrustLevel</dd>
+        <dt>激活时间</dt>
+        <dd>@DisplayFormat.Time(User.ActivatedAt)</dd>
+        <dt>最近登录</dt>
+        <dd>@DisplayFormat.Time(User.LastLoginAt)</dd>
+    </dl>
+
+    <p>
+        <a href="/admin/users/@User.Id/devices">设备验证历史</a> ·
+        <a href="/admin/audit?actor=@Uri.EscapeDataString(User.Handle)">该用户作为操作者的审计</a> ·
+        <a href="/admin/audit?targetType=user&amp;targetId=@User.Id">以该用户为目标的审计</a>
+    </p>
+
+    @if (User.Status != "deleted")
+    {
+        <section aria-labelledby="user-status-heading">
+            <h2 id="user-status-heading">账号状态</h2>
+            <form method="post" action="/admin/users/@User.Id/status"
+                  onsubmit="return confirm('确认变更该用户账号状态？该操作会写入审计并通知用户。');">
+                <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                <p>
+                    <label for="user-status-value">目标状态</label>
+                    <select id="user-status-value" name="status" required>
+                        <option value="active" selected="@(User.Status == "active")">正常 / 解封</option>
+                        <option value="muted" selected="@(User.Status == "muted")">禁言</option>
+                        <option value="banned" selected="@(User.Status == "banned")">封禁</option>
+                    </select>
+                </p>
+                <p>
+                    <label for="user-status-reason">原因（1-500 字）</label>
+                    <textarea id="user-status-reason" name="reason" rows="2" maxlength="500" required></textarea>
+                </p>
+                <p>
+                    <label for="user-status-expires">禁言到期（UTC，禁言必填）</label>
+                    <input id="user-status-expires" name="expiresAt" type="datetime-local" />
+                </p>
+                <button type="submit">保存状态</button>
+            </form>
+            <p class="muted">不能修改自己的账号状态；最后一名有效管理员不能被禁言或封禁。</p>
+        </section>
+
+        <section aria-labelledby="user-trust-heading">
+            <h2 id="user-trust-heading">信任等级</h2>
+            <form method="post" action="/admin/users/@User.Id/trust"
+                  onsubmit="return confirm('确认调整该用户信任等级？');">
+                <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                <p>
+                    <label for="user-trust-value">等级</label>
+                    <select id="user-trust-value" name="trustLevel" required>
+                        @for (var level = 0; level <= 4; level++)
+                        {
+                            <option value="@level" selected="@(User.TrustLevel == level)">@level</option>
+                        }
+                    </select>
+                </p>
+                <p>
+                    <label for="user-trust-reason">原因（1-500 字）</label>
+                    <textarea id="user-trust-reason" name="reason" rows="2" maxlength="500" required></textarea>
+                </p>
+                <button type="submit">保存等级</button>
+            </form>
+        </section>
+    }
+    else
+    {
+        <p class="muted">已注销账号不可再变更状态或信任等级。</p>
+    }
+}
+
+@code {
+    [Parameter]
+    public Guid UserId { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private AdminUserView? User { get; set; }
+    private string Token { get; set; } = string.Empty;
+
+    private string? MessageText => Message switch
+    {
+        "status" => "账号状态已更新并通知用户。",
+        "trust" => "信任等级已更新。",
+        _ => null
+    };
+
+    private string? ErrorText => Error switch
+    {
+        "validation" => "参数无效：原因、状态或信任等级不符合要求。",
+        "conflict" => "当前账号状态不允许该操作。",
+        "missing" => "用户不存在。",
+        "self" => "不能修改自己的状态或降级自己的信任等级。",
+        "last-admin" => "不能移除或处罚最后一名有效管理员。",
+        "forbidden" => "当前账号无权执行该操作。",
+        _ => null
+    };
+
+    private static string StatusLabel(string status) => status switch
+    {
+        "active" => "正常",
+        "muted" => "禁言",
+        "banned" => "封禁",
+        "deleted" => "已注销",
+        _ => status
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+
+        if (!Guid.TryParse(httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier), out var actorId))
+        {
+            StatusCodeResponse.Defer(httpContext, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        try
+        {
+            User = await Users.GetAsync(actorId, UserId, httpContext.RequestAborted);
+        }
+        catch (ApiProblemException exception) when (exception.Code == ApiErrorCodes.NotFound)
+        {
+            StatusCodeResponse.NotFound(httpContext);
+        }
+    }
+}

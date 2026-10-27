@@ -1,0 +1,288 @@
+@page "/settings/devices"
+@attribute [Authorize]
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Contracts.Devices
+@using WhalePod.Infrastructure.Services
+@using WhalePod.Web.Services
+@inject DeviceVerificationService DeviceVerification
+@inject DeviceChallengeRevealCache ChallengeReveal
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+@inject TimeProvider TimeProvider
+
+<SeoHead Title="设备验证 - WhalePod" Description="在本机持有 Ed25519 密钥并完成设备验证。" NoIndex="true" />
+
+<header class="page-masthead settings-masthead">
+    <p class="masthead-kicker">账户设置</p>
+    <h1>设备验证</h1>
+    <p class="masthead-lead">用本机 Ed25519 密钥证明设备持有；站点只验证签名。</p>
+    <SettingsNav />
+</header>
+
+@if (MessageText is not null)
+{
+    <p class="alert alert-success" role="status">@MessageText</p>
+}
+
+@if (ErrorText is not null)
+{
+    <p class="alert alert-error" role="alert">@ErrorText</p>
+}
+
+<p class="alert alert-warning">
+    私钥只保存在你的本机；本页只保存公钥、指纹和验证结果。
+    设备验证只证明你持有对应设备密钥，不证明运行环境未被篡改；内核版本与平台由本机上报，站点只验证签名。
+</p>
+
+@if (DeviceData is null)
+{
+    <p class="alert alert-error" role="alert">设备列表加载失败，请稍后重试。</p>
+}
+else
+{
+    <p>
+        活跃设备 <strong>@DeviceData.ActiveDeviceCount</strong> / @DeviceData.MaxActiveDevices
+        @if (DeviceData.ActiveDeviceCount > 0)
+        {
+            <span class="badge badge-verified">设备密钥已验证</span>
+            @if (LastVerifiedAt is not null)
+            {
+                <span class="muted">最近验证：@DisplayFormat.Time(LastVerifiedAt.Value)</span>
+            }
+        }
+        else
+        {
+            <span class="muted">尚未验证设备</span>
+        }
+    </p>
+
+    <section aria-labelledby="device-challenge-heading">
+        <h2 id="device-challenge-heading">1. 生成一次性挑战</h2>
+        @if (Challenge is null)
+        {
+            <p>挑战默认 5 分钟有效，只能成功使用一次；服务端只保存挑战哈希。</p>
+            <form method="post" action="/settings/devices/challenge">
+                <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                <button type="submit">生成验证挑战</button>
+            </form>
+        }
+        else
+        {
+            <p class="alert alert-success" role="status">
+                挑战已生成，有效期至 @DisplayFormat.Time(Challenge.ExpiresAt)。请复制下面的命令并立即在本机运行。
+            </p>
+            <p><strong>挑战：</strong><code>@Challenge.Challenge</code></p>
+            <pre id="device-cli-command">@Challenge.CliCommand</pre>
+            <p>
+                <button type="button" class="button-secondary" data-copy-target="device-cli-command">复制 CLI 命令</button>
+                <a class="button button-secondary" href="/settings/devices">刷新页面</a>
+            </p>
+        }
+    </section>
+
+    <section aria-labelledby="device-cli-heading">
+        <h2 id="device-cli-heading">2. 在本机签名</h2>
+        <ol>
+            <li>从发布页下载对应平台的 <code>whalepod-device</code>（CLI 版本 @DeviceProtocol.CliVersion，协议 @DeviceProtocol.Name）。</li>
+            <li>运行上面的命令；首次运行会在用户目录生成本地 Ed25519 密钥并打印 JSON。</li>
+            <li>CLI 不联网、不自动更新，不读取站点令牌；私钥不会上传、打印或写入日志。</li>
+            <li>请备份密钥文件；私钥丢失无法恢复，只能撤销旧设备后重新验证。</li>
+        </ol>
+        <p>
+            <a href="https://github.com/HestiaLab/WhalePod/releases">下载 CLI 发布包</a>
+            · 下载后请用发布包中的 <code>SHA256SUMS</code> 校验文件完整性。
+        </p>
+        <p class="muted">
+            macOS 未公证版本需要按发布说明在“隐私与安全性”中手动允许；Windows 可能出现 SmartScreen 提示；Linux 需先赋予可执行权限。
+        </p>
+    </section>
+
+    <section aria-labelledby="device-complete-heading">
+        <h2 id="device-complete-heading">3. 粘贴并验证</h2>
+        <form id="device-complete-form" data-device-form method="post" action="/settings/devices/complete">
+            <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+            <p>
+                <label for="device-payload">粘贴 CLI 输出的 JSON（可整段终端输出）</label>
+                <textarea id="device-payload" name="payload" rows="8" maxlength="20000"
+                          placeholder="{ &quot;version&quot;: 1, ... }"></textarea>
+            </p>
+            <p>
+                <label for="device-label">设备备注（可选，最多 40 字）</label>
+                <input id="device-label" name="label" maxlength="40" placeholder="例如：主力工作站" />
+            </p>
+            <div id="device-preflight" class="editor-preview" role="status" aria-live="polite">
+                尚未识别到有效 JSON；可以粘贴 CLI 输出，或在下方手动填写。
+            </div>
+            <details class="device-manual">
+                <summary>无法解析 JSON？手动填写</summary>
+                <p class="muted">手动填写时请清空上方粘贴框，并确保 challenge、handle、timestamp、内核与平台与 CLI 签名内容完全一致。</p>
+                <p>
+                    <label for="manual-challenge">challenge</label>
+                    <input id="manual-challenge" name="manualChallenge" value="@(Challenge?.Challenge)" maxlength="128" />
+                </p>
+                <p>
+                    <label for="manual-handle">handle</label>
+                    <input id="manual-handle" name="manualHandle" value="@Handle" maxlength="32" />
+                </p>
+                <p>
+                    <label for="manual-timestamp">timestamp（Unix 秒）</label>
+                    <input id="manual-timestamp" name="manualTimestamp" value="@NowUnixSeconds" inputmode="numeric" />
+                </p>
+                <p>
+                    <label for="manual-kernel">内核版本</label>
+                    <input id="manual-kernel" name="manualKernelVersion" maxlength="64" placeholder="例如：6.8.0-45-generic" />
+                </p>
+                <p>
+                    <label for="manual-platform">平台</label>
+                    <select id="manual-platform" name="manualPlatform">
+                        <option value="">未选择</option>
+                        @foreach (var platform in DeviceProtocol.Platforms)
+                        {
+                            <option value="@platform">@platform</option>
+                        }
+                    </select>
+                </p>
+                <p>
+                    <label for="manual-public-key">公钥（base64 SPKI DER）</label>
+                    <textarea id="manual-public-key" name="manualPublicKey" rows="3" maxlength="200"></textarea>
+                </p>
+                <p>
+                    <label for="manual-signature">签名（base64）</label>
+                    <textarea id="manual-signature" name="manualSignature" rows="3" maxlength="128"></textarea>
+                </p>
+            </details>
+            <button type="submit">提交验证</button>
+            <span class="muted">提交后由服务端重新构造签名消息并验签。</span>
+        </form>
+    </section>
+
+    <section aria-labelledby="device-list-heading">
+        <h2 id="device-list-heading">我的设备</h2>
+        @if (DeviceData.Items.Count == 0)
+        {
+            <div class="empty-state">
+                <h2>还没有绑定设备</h2>
+                <p>完成上面的步骤后，设备会显示在这里。</p>
+            </div>
+        }
+        else
+        {
+            <div class="table-scroll" tabindex="0" role="region" aria-label="我的设备数据表">
+                <table class="device-table">
+                    <caption>我的设备；指纹仅显示前 16 位，撤销后需要重新验证才能恢复徽章。</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col">指纹</th>
+                            <th scope="col">内核 / 平台</th>
+                            <th scope="col">备注</th>
+                            <th scope="col">创建时间</th>
+                            <th scope="col">最后验证</th>
+                            <th scope="col">状态</th>
+                            <th scope="col">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var device in DeviceData.Items)
+                        {
+                            <tr>
+                                <td><code>@ShortFingerprint(device.Fingerprint)</code></td>
+                                <td>@device.KernelVersion<br /><span class="muted">@device.Platform</span></td>
+                                <td>@(device.Label ?? "—")</td>
+                                <td>@DisplayFormat.Time(device.CreatedAt)</td>
+                                <td>@DisplayFormat.Time(device.LastVerifiedAt)</td>
+                                <td>@(device.Status == "active" ? "活跃" : "已撤销")</td>
+                                <td>
+                                    @if (device.Status == "active")
+                                    {
+                                        <form method="post" action="/settings/devices/@device.Id/revoke"
+                                              onsubmit="return confirm('撤销后该设备不再提供徽章，需要重新验证才能恢复。确定撤销？');">
+                                            <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                                            <input name="reason" maxlength="200" placeholder="撤销原因（可选）" />
+                                            <button type="submit" class="button-secondary">撤销</button>
+                                        </form>
+                                    }
+                                    else
+                                    {
+                                        <span class="muted">已撤销</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+}
+
+<p class="back-link"><a href="/settings/profile">← 返回资料设置</a> · <a href="/">返回首页</a></p>
+
+@code {
+    [SupplyParameterFromQuery(Name = "message")]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery(Name = "error")]
+    public string? Error { get; set; }
+
+    private DeviceListView? DeviceData { get; set; }
+    private DeviceChallengeView? Challenge { get; set; }
+    private string Token { get; set; } = string.Empty;
+    private string Handle { get; set; } = string.Empty;
+
+    private long NowUnixSeconds => TimeProvider.GetUtcNow().ToUnixTimeSeconds();
+
+    private DateTimeOffset? LastVerifiedAt => DeviceData?.Items
+        .Where(device => device.Status == "active")
+        .Select(device => (DateTimeOffset?)device.LastVerifiedAt)
+        .Max();
+
+    private string? MessageText => Message switch
+    {
+        "verified" => "设备验证成功，徽章已更新。",
+        "revoked" => "设备已撤销。",
+        _ => null
+    };
+
+    private string? ErrorText => string.IsNullOrWhiteSpace(Error)
+        ? null
+        : Error switch
+    {
+        "challenge-not-found" => "挑战不存在，请重新生成挑战。",
+        "challenge-expired" => "挑战已过期，请重新生成挑战。",
+        "challenge-used" => "挑战已使用，请重新生成挑战。",
+        "signature-invalid" => "签名无效，请检查粘贴内容或重新运行 CLI 签名。",
+        "timestamp-invalid" => "时间戳超出允许偏差，请校准本机时间后重新签名。",
+        "platform-unsupported" => "平台不在支持列表内，请使用受支持的 CLI 或平台。",
+        "device-bound" => "该公钥已绑定其他账号；如属本账号，请刷新设备列表。",
+        "device-limit" => "活跃设备数量已达上限，请先撤销旧设备。",
+        "locked" => "连续验证失败次数过多，请稍后重试。",
+        "format" => "未识别到有效的 CLI JSON，请检查粘贴内容或在下方手动填写。",
+        "not-found" => "设备不存在或当前不可见。",
+        "forbidden" => "账号状态不允许此操作。",
+        "auth" => "登录状态已失效，请重新登录。",
+        _ => "提交失败，请检查内容后重试。"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var http = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+        Token = Antiforgery.GetAndStoreTokens(http).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+        if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
+        {
+            StatusCodeResponse.Defer(http, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        Handle = http.User.Identity?.Name ?? string.Empty;
+        Challenge = ChallengeReveal.Take(userId);
+        DeviceData = await DeviceVerification.ListAsync(userId, http.RequestAborted);
+    }
+
+    private static string ShortFingerprint(string fingerprint)
+    {
+        return fingerprint.Length <= 16 ? fingerprint : fingerprint[..16];
+    }
+}

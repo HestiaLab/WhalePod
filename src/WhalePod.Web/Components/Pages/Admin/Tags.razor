@@ -1,0 +1,124 @@
+@page "/admin/tags"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject TagAdminService TagAdmin
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>标签管理 - WhalePod</PageTitle>
+
+<h1>标签管理</h1>
+
+
+<p><a href="/">返回首页</a></p>
+
+@if (MessageText is not null)
+{
+    <p role="status">@MessageText</p>
+}
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+@if (Items.Count == 0)
+{
+    <div class="empty-state">
+        <h2>暂无标签</h2>
+        <p>帖子审核通过后，标签会自动出现在这里。</p>
+    </div>
+}
+else
+{
+    <div class="table-scroll" tabindex="0" role="region" aria-label="全部标签">
+        <table class="admin-tag-table">
+            <caption>全部标签；公开帖子数只统计已通过审核且未删除的帖子。</caption>
+            <thead>
+                <tr>
+                    <th scope="col">名称</th>
+                    <th scope="col">Slug</th>
+                    <th scope="col">公开帖子</th>
+                    <th scope="col">状态</th>
+                    <th scope="col">改名</th>
+                    <th scope="col">可见性</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var tag in Items)
+                {
+                    <tr>
+                        <td>@tag.Name</td>
+                        <td>@tag.Slug</td>
+                        <td>@tag.PublicPostCount</td>
+                        <td>@(tag.Status == "active" ? "显示" : "隐藏")</td>
+                        <td>
+                            <form method="post" action="/admin/tags/@tag.Id/rename">
+                                <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                                <label for="tag-name-@tag.Id">新名称</label>
+                                <input id="tag-name-@tag.Id" name="name" value="@tag.Name" maxlength="30" required />
+                                <button type="submit">保存</button>
+                            </form>
+                        </td>
+                        <td>
+                            <form method="post" action="/admin/tags/@tag.Id/visibility">
+                                <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                                @if (tag.Status == "active")
+                                {
+                                    <input type="hidden" name="hidden" value="true" />
+                                    <input id="tag-confirm-@tag.Id" type="checkbox" name="confirmImpact" value="true" required />
+                                    <label for="tag-confirm-@tag.Id">确认隐藏，影响 @tag.PublicPostCount 篇公开帖子</label>
+                                    <button type="submit">隐藏</button>
+                                }
+                                else
+                                {
+                                    <input type="hidden" name="hidden" value="false" />
+                                    <button type="submit">恢复显示</button>
+                                }
+                            </form>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private IReadOnlyList<TagAdminItem> Items { get; set; } = [];
+    private string Token { get; set; } = string.Empty;
+
+    private string? MessageText => Message switch
+    {
+        "renamed" => "标签名称已更新。",
+        "hidden" => "标签已隐藏。",
+        "restored" => "标签已恢复显示。",
+        "unchanged" => "没有需要变更的内容。",
+        _ => null
+    };
+
+    private string? ErrorText => Error switch
+    {
+        "duplicate" => "名称已被其他标签使用（大小写不敏感）。",
+        "invalid-name" => "名称需为 1-30 个字符，且不能包含控制字符。",
+        _ => null
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+        Items = await TagAdmin.ListAsync();
+    }
+}

@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WhalePod.Agent/WhalePod.Agent.csproj" />
+    <Project Path="src/WhalePod.Api/WhalePod.Api.csproj" />
+    <Project Path="src/WhalePod.Contracts/WhalePod.Contracts.csproj" />
+    <Project Path="src/WhalePod.DeviceCli/WhalePod.DeviceCli.csproj" />
+    <Project Path="src/WhalePod.Domain/WhalePod.Domain.csproj" />
+    <Project Path="src/WhalePod.Infrastructure/WhalePod.Infrastructure.csproj" />
+    <Project Path="src/WhalePod.Web/WhalePod.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WhalePod.Tests.EndToEnd/WhalePod.Tests.EndToEnd.csproj" />
+    <Project Path="tests/WhalePod.Tests.Integration/WhalePod.Tests.Integration.csproj" />
+    <Project Path="tests/WhalePod.Tests.Unit/WhalePod.Tests.Unit.csproj" />
+  </Folder>
+</Solution>

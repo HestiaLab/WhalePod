@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>WhalePod（鲸群）v0.1.0</title>
+  <meta name="description" content="WhalePod 是面向 AI 工具使用者的邀请制技术社区，只收录可复现的实测记录与可直接复制的产物。">
+  <meta property="og:title" content="WhalePod（鲸群）v0.1.0">
+  <meta property="og:description" content="可复现的 AI 工具实测记录与可直接复制的产物。">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://hestialab.github.io/WhalePod/">
+  <meta property="og:image" content="https://hestialab.github.io/WhalePod/assets/whalepod-home.png">
+  <link rel="canonical" href="https://hestialab.github.io/WhalePod/">
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到正文</a>
+
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="./" aria-label="WhalePod 鲸群首页">
+        <img class="brand-mark" src="assets/favicon.svg" alt="" width="30" height="30">
+        <span class="brand-word">WhalePod</span>
+        <span class="brand-cn">鲸群</span>
+      </a>
+      <nav class="site-nav" aria-label="页面导航">
+        <a href="#capabilities">能力</a>
+        <a href="#architecture">架构</a>
+        <a href="#docs">文档</a>
+        <a href="#release">发布</a>
+        <a class="nav-external" href="https://github.com/HestiaLab/WhalePod">GitHub <span aria-hidden="true">↗</span></a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow">WhalePod · 实测档案</p>
+        <h1 id="hero-title">把可复现的实测，<br>做成可复制的档案。</h1>
+        <p class="lead">面向 AI 工具使用者的邀请制技术社区。环境、步骤、结果与失败都写在这里，产物可以直接复制。</p>
+        <div class="actions">
+          <a class="button button-primary" href="#release">下载 v0.1.0</a>
+          <a class="button button-secondary" href="https://github.com/HestiaLab/WhalePod">查看源码 <span aria-hidden="true">↗</span></a>
+        </div>
+        <p class="hero-meta">v0.1.0 · 2026-10-27 · Blazor Web App + ASP.NET Core + PostgreSQL</p>
+      </div>
+      <figure class="hero-shot">
+        <img src="assets/whalepod-home.png" alt="WhalePod 首页：实测档案信息流、分类侧栏与热门讨论" width="1440" height="900">
+        <figcaption>首页 · 演示数据</figcaption>
+      </figure>
+    </section>
+
+    <aside class="notice" aria-label="托管说明">
+      <strong>这是静态项目介绍页。</strong>
+      完整论坛需要运行 Web/API 与 PostgreSQL；GitHub Pages 只托管本页，不执行服务端。
+    </aside>
+
+    <section id="capabilities" class="section" aria-labelledby="capabilities-title">
+      <div class="section-head">
+        <p class="eyebrow">What ships</p>
+        <h2 id="capabilities-title">v0.1.0 交付能力</h2>
+        <p>从内容生产、审核治理到可验证设备身份，按一个完整社区的最小闭环交付。</p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature">
+          <span class="feature-index">01</span>
+          <h3>邀请制账号</h3>
+          <p>GitHub OAuth 代码、邀请激活、开发登录、账号状态、头像与注销。Cookie 会话 + CSRF。</p>
+        </article>
+        <article class="feature">
+          <span class="feature-index">02</span>
+          <h3>内容与产物</h3>
+          <p>板块、标签、帖子、评论、Markdown 清洗、图片重编码、产物复制、点赞与采纳。</p>
+        </article>
+        <article class="feature">
+          <span class="feature-index">03</span>
+          <h3>审核与治理</h3>
+          <p>人工审核队列、举报、申诉、敏感词策略、只读模式、审计与系统健康。</p>
+        </article>
+        <article class="feature">
+          <span class="feature-index">04</span>
+          <h3>设备验证</h3>
+          <p>Ed25519 challenge 与 Device CLI，设备徽章、撤销与管理员设备历史。</p>
+        </article>
+        <article class="feature">
+          <span class="feature-index">05</span>
+          <h3>AI 审核边界</h3>
+          <p>Agent API 与 stdio MCP 默认关闭；只建议、人工裁决，支持预算、熔断与最小 scope。</p>
+        </article>
+        <article class="feature">
+          <span class="feature-index">06</span>
+          <h3>运维与发现</h3>
+          <p>RSS/Sitemap/SEO、中文搜索、健康检查、结构化日志、备份脚本与后台管理。</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="architecture" class="section section-rule" aria-labelledby="architecture-title">
+      <div class="section-head">
+        <p class="eyebrow">Runtime</p>
+        <h2 id="architecture-title">同站 Web + API，共享会话与数据库</h2>
+        <p>浏览器访问静态 SSR 页面；写操作走同源 API。后台 worker 只在 API 进程运行。</p>
+      </div>
+      <div class="stack" role="list" aria-label="运行时组件">
+        <div class="stack-node" role="listitem"><span>Web</span><small>Blazor Web App · SSR</small></div>
+        <div class="stack-node" role="listitem"><span>API</span><small>Minimal API · Agent API</small></div>
+        <div class="stack-node" role="listitem"><span>PostgreSQL</span><small>业务数据 · 审计 · 任务</small></div>
+        <div class="stack-node" role="listitem"><span>Media</span><small>Local / S3 兼容存储</small></div>
+        <div class="stack-node" role="listitem"><span>SMTP</span><small>Email outbox worker</small></div>
+        <div class="stack-node" role="listitem"><span>Agent</span><small>stdio MCP · 默认关闭</small></div>
+      </div>
+    </section>
+
+    <section id="docs" class="section section-rule" aria-labelledby="docs-title">
+      <div class="section-head">
+        <p class="eyebrow">Documentation</p>
+        <h2 id="docs-title">从需求到运维</h2>
+        <p>交付文档已经收敛到 v0.1.0；详细行为以 SRS 和 API 契约为准。</p>
+      </div>
+      <div class="doc-grid">
+        <a class="doc-link" href="https://github.com/HestiaLab/WhalePod/blob/main/docs/SRS.md">
+          <span class="doc-label">SRS</span>
+          <strong>需求规格说明书</strong>
+          <small>范围、行为、验收标准</small>
+        </a>
+        <a class="doc-link" href="https://github.com/HestiaLab/WhalePod/blob/main/docs/design/architecture.md">
+          <span class="doc-label">Design</span>
+          <strong>架构设计</strong>
+          <small>运行时、关键决策、安全约束</small>
+        </a>
+        <a class="doc-link" href="https://github.com/HestiaLab/WhalePod/blob/main/docs/api/openapi.yaml">
+          <span class="doc-label">API</span>
+          <strong>OpenAPI 契约</strong>
+          <small>公开 / 管理 / Agent API</small>
+        </a>
+        <a class="doc-link" href="https://github.com/HestiaLab/WhalePod/blob/main/docs/design/acceptance.md">
+          <span class="doc-label">Acceptance</span>
+          <strong>交付验收</strong>
+          <small>UAT、可访问性与生产前置</small>
+        </a>
+        <a class="doc-link" href="https://github.com/HestiaLab/WhalePod/blob/main/docs/device-cli.md">
+          <span class="doc-label">CLI</span>
+          <strong>Device CLI</strong>
+          <small>签名、退出码与发布</small>
+        </a>
+        <a class="doc-link" href="https://github.com/HestiaLab/WhalePod/blob/main/docs/agent-mcp.md">
+          <span class="doc-label">Agent</span>
+          <strong>Agent / MCP</strong>
+          <small>服务令牌、租约与质量边界</small>
+        </a>
+      </div>
+    </section>
+
+    <section id="release" class="section section-rule" aria-labelledby="release-title">
+      <div class="section-head release-head">
+        <div>
+          <p class="eyebrow">Release</p>
+          <h2 id="release-title">v0.1.0 发布产物</h2>
+          <p>Web/API 为 linux-x64 包；Device CLI 提供三平台自包含单文件。产物由 GitHub Release 发布。</p>
+        </div>
+        <a class="button button-primary" href="https://github.com/HestiaLab/WhalePod/releases/tag/v0.1.0">打开 Release <span aria-hidden="true">↗</span></a>
+      </div>
+      <div class="release-grid">
+        <a class="release-asset" href="https://github.com/HestiaLab/WhalePod/releases/download/v0.1.0/whalepod-web-linux-x64.zip">
+          <span class="asset-name">whalepod-web-linux-x64.zip</span>
+          <small>Web · linux-x64</small>
+        </a>
+        <a class="release-asset" href="https://github.com/HestiaLab/WhalePod/releases/download/v0.1.0/whalepod-api-linux-x64.zip">
+          <span class="asset-name">whalepod-api-linux-x64.zip</span>
+          <small>API · linux-x64</small>
+        </a>
+        <a class="release-asset" href="https://github.com/HestiaLab/WhalePod/releases/download/v0.1.0/whalepod-device-win-x64.zip">
+          <span class="asset-name">whalepod-device-win-x64.zip</span>
+          <small>Device CLI · Windows</small>
+        </a>
+        <a class="release-asset" href="https://github.com/HestiaLab/WhalePod/releases/download/v0.1.0/whalepod-device-linux-x64.zip">
+          <span class="asset-name">whalepod-device-linux-x64.zip</span>
+          <small>Device CLI · Linux</small>
+        </a>
+        <a class="release-asset" href="https://github.com/HestiaLab/WhalePod/releases/download/v0.1.0/whalepod-device-osx-arm64.zip">
+          <span class="asset-name">whalepod-device-osx-arm64.zip</span>
+          <small>Device CLI · macOS arm64</small>
+        </a>
+        <a class="release-asset" href="https://github.com/HestiaLab/WhalePod/releases/download/v0.1.0/SHA256SUMS">
+          <span class="asset-name">SHA256SUMS</span>
+          <small>全量校验清单</small>
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <img src="assets/favicon.svg" alt="" width="24" height="24">
+        <span>WhalePod（鲸群）</span>
+      </div>
+      <p>v0.1.0 · 静态项目介绍 · <a href="https://github.com/HestiaLab/WhalePod">源码</a> · <a href="https://github.com/HestiaLab/WhalePod/releases/tag/v0.1.0">Release</a></p>
+    </div>
+  </footer>
+</body>
+</html>

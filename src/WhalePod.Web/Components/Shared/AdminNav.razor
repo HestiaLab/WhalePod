@@ -1,0 +1,38 @@
+@using Microsoft.AspNetCore.Components.Routing
+
+<nav class="admin-nav" aria-label="管理后台导航">
+    <div class="admin-nav-group">
+        <p class="admin-nav-label">概览</p>
+        <ul>
+            <li><NavLink href="/admin" Match="NavLinkMatch.All">后台首页</NavLink></li>
+        </ul>
+    </div>
+    <div class="admin-nav-group">
+        <p class="admin-nav-label">内容治理</p>
+        <ul>
+            <li><NavLink href="/admin/moderation">审核队列</NavLink></li>
+            <li><NavLink href="/admin/reports">举报处理</NavLink></li>
+            <li><NavLink href="/admin/appeals">申诉复核</NavLink></li>
+            <li><NavLink href="/admin/moderation/words">敏感词</NavLink></li>
+        </ul>
+    </div>
+    <div class="admin-nav-group">
+        <p class="admin-nav-label">社区与配置</p>
+        <ul>
+            <li><NavLink href="/admin/users">用户管理</NavLink></li>
+            <li><NavLink href="/admin/categories">板块管理</NavLink></li>
+            <li><NavLink href="/admin/tags">标签管理</NavLink></li>
+            <li><NavLink href="/admin/invites">邀请码</NavLink></li>
+        </ul>
+    </div>
+    <div class="admin-nav-group">
+        <p class="admin-nav-label">系统</p>
+        <ul>
+            <li><NavLink href="/admin/ai">AI 审核</NavLink></li>
+            <li><NavLink href="/admin/service-accounts">服务账号</NavLink></li>
+            <li><NavLink href="/admin/audit">审计日志</NavLink></li>
+            <li><NavLink href="/admin/system">系统健康</NavLink></li>
+            <li><NavLink href="/admin/mode">站点模式</NavLink></li>
+        </ul>
+    </div>
+</nav>

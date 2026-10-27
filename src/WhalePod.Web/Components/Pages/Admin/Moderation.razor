@@ -1,0 +1,223 @@
+@page "/admin/moderation"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject ContentModerationService ModerationService
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>审核队列 - WhalePod</PageTitle>
+
+<h1>审核队列</h1>
+
+
+@if (MessageText is not null)
+{
+    <p role="status">@MessageText</p>
+}
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+<section aria-labelledby="moderation-filter-heading">
+    <h2 id="moderation-filter-heading">筛选</h2>
+    <form method="get" action="/admin/moderation">
+        <label for="moderation-type">类型</label>
+        <select id="moderation-type" name="targetType">
+            <option value="">全部</option>
+            <option value="post" selected="@(TargetType == "post")">帖子</option>
+            <option value="comment" selected="@(TargetType == "comment")">评论</option>
+        </select>
+        <button type="submit">筛选</button>
+        <a href="/admin/moderation">清除</a>
+    </form>
+</section>
+
+@if (Page is null)
+{
+    <p role="alert">无法加载审核队列。</p>
+}
+else if (Page.Items.Count == 0)
+{
+    <div class="empty-state">
+        <h2>当前没有待审核内容</h2>
+        <p>新帖子与评论提交后会进入这里；AI 建议只作参考。</p>
+    </div>
+}
+else
+{
+    <div class="table-scroll" tabindex="0" role="region" aria-label="审核队列">
+        <table class="admin-moderation-table">
+            <caption>按“升级优先、提交时间升序”排列；AI 建议只作参考，最终由人工裁决。</caption>
+            <colgroup>
+                <col class="moderation-col-title" />
+                <col class="moderation-col-author" />
+                <col class="moderation-col-risk" />
+                <col class="moderation-col-ai" />
+                <col class="moderation-col-time" />
+                <col class="moderation-col-actions" />
+            </colgroup>
+            <thead>
+                <tr>
+                    <th scope="col">类型 / 标题</th>
+                    <th scope="col">作者 / 板块</th>
+                    <th scope="col">风险与举报</th>
+                    <th scope="col">AI 建议</th>
+                    <th scope="col">提交时间</th>
+                    <th scope="col">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var item in Page.Items)
+                {
+                    <tr>
+                        <td>
+                            <strong>@TypeLabel(item.TargetType)</strong><br />
+                            <a href="@DetailUrl(item)">@item.Title</a>
+                            <div class="muted">@item.Excerpt</div>
+                        </td>
+                        <td>
+                            @item.Author.DisplayName（@item.Author.Handle）<br />
+                            <span class="muted">@item.Category.Name</span>
+                        </td>
+                        <td>
+                            @if (item.RiskHints.Count == 0)
+                            {
+                                <span>无风险提示</span>
+                            }
+                            else
+                            {
+                                <ul class="inline-list">
+                                    @foreach (var hint in item.RiskHints)
+                                    {
+                                        <li>@hint</li>
+                                    }
+                                </ul>
+                            }
+                            <br />
+                            <span class="muted">待处理举报：@item.ReportCount</span>
+                        </td>
+                        <td>
+                            @if (item.AiSuggestion is null)
+                            {
+                                <span class="muted">无</span>
+                            }
+                            else
+                            {
+                                <span>@SuggestionLabel(item.AiSuggestion.Suggestion)</span><br />
+                                <span class="muted">置信度 @((item.AiSuggestion.Confidence * 100).ToString("0.0"))%</span><br />
+                                <span class="muted">@item.AiSuggestion.PolicyCode</span>
+                            }
+                        </td>
+                        <td>@DisplayFormat.Time(item.SubmittedAt)</td>
+                        <td>
+                            <a class="button button-secondary" href="@DetailUrl(item)">预览并处理</a>
+                            @if (item.AiSuggestion is null || item.AiSuggestion.Suggestion == "approve")
+                            {
+                                <form method="post" action="/admin/moderation/@item.TargetType/@item.TargetId/action">
+                                    <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                                    <input type="hidden" name="action" value="approve" />
+                                    <input type="hidden" name="expectedContentVersion" value="@item.ContentVersion" />
+                                    @if (item.AiSuggestion is not null)
+                                    {
+                                        <input type="hidden" name="suggestionId" value="@item.AiSuggestion.Id" />
+                                    }
+                                    <button type="submit">快速通过</button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    @if (Page.NextCursor is not null)
+    {
+        <p>
+            <a href="@NextPageUrl()">下一页</a>
+        </p>
+    }
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "targetType")]
+    public string? TargetType { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Cursor { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private ModerationQueuePage? Page { get; set; }
+    private string Token { get; set; } = string.Empty;
+
+    private string? MessageText => Message switch
+    {
+        "approved" => "内容已通过审核。",
+        "rejected" => "内容已驳回。",
+        "hidden" => "内容已隐藏。",
+        "deleted" => "内容已删除。",
+        "saved" => "审核结果已保存。",
+        _ => null
+    };
+
+    private string? ErrorText => Error switch
+    {
+        "stale" => "内容版本已变化或任务已被处理，请刷新队列后重试。",
+        "override" => "与 AI 建议不一致时必须填写覆盖理由。",
+        "validation" => "审核参数无效：驳回、隐藏、删除或升级必须填写原因。",
+        "missing" => "待审核内容不存在或已删除。",
+        "forbidden" => "当前账号无权执行该审核操作。",
+        _ => null
+    };
+
+    private static string TypeLabel(string type) => type == "post" ? "帖子" : "评论";
+
+    private static string SuggestionLabel(string suggestion) => suggestion switch
+    {
+        "approve" => "通过",
+        "reject" => "驳回",
+        "escalate" => "升级人工",
+        _ => suggestion
+    };
+
+    private static string DetailUrl(ModerationQueueItemView item)
+    {
+        return $"/admin/moderation/{item.TargetType}/{item.TargetId}";
+    }
+
+    private string NextPageUrl()
+    {
+        var type = string.IsNullOrWhiteSpace(TargetType) ? string.Empty : $"&targetType={TargetType}";
+        return $"/admin/moderation?cursor={Uri.EscapeDataString(Page!.NextCursor!)}{type}";
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+
+        if (!Guid.TryParse(httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier), out var actorId))
+        {
+            StatusCodeResponse.Defer(httpContext, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        Page = await ModerationService.GetQueueAsync(
+            actorId,
+            TargetType,
+            20,
+            Cursor,
+            httpContext.RequestAborted);
+    }
+}

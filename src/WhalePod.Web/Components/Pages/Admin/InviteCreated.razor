@@ -1,0 +1,62 @@
+@page "/admin/invites/created"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using System.Security.Claims
+@using WhalePod.Infrastructure.Services
+@using WhalePod.Web.Services
+@inject InviteRevealCache RevealCache
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>邀请码已创建 - WhalePod</PageTitle>
+
+<h1>邀请码已创建</h1>
+
+
+@if (Reveal is null)
+{
+    <p role="alert">邀请码只显示一次，当前没有可展示的邀请码。请返回列表重新创建。</p>
+}
+else
+{
+    <p role="status">请立即复制并安全传递邀请码。离开本页后无法再次查看。</p>
+
+    <p>
+        <code id="invite-code">@Reveal.PlaintextCode</code>
+        <button type="button" data-copy-target="invite-code">复制邀请码</button>
+    </p>
+    <noscript><p>浏览器未启用脚本时，请手动选择上方邀请码复制。</p></noscript>
+
+    <dl>
+        <dt>提示</dt>
+        <dd>@(Reveal.CodeHint ?? "—")</dd>
+        <dt>创建者</dt>
+        <dd>@Reveal.CreatedByHandle</dd>
+        <dt>最大使用次数</dt>
+        <dd>@Reveal.MaxUses</dd>
+        <dt>有效期至（北京时间）</dt>
+        <dd>@DisplayFormat.Time(Reveal.ExpiresAt)</dd>
+        <dt>备注</dt>
+        <dd>@(Reveal.Note ?? "—")</dd>
+        <dt>创建时间（北京时间）</dt>
+        <dd>@DisplayFormat.Time(Reveal.CreatedAt)</dd>
+    </dl>
+
+    <p>数据库只保存 SHA-256 哈希；本页为唯一一次明文展示。</p>
+}
+
+<p><a href="/admin/invites">返回邀请码列表</a></p>
+
+@code {
+    private InviteCreationData? Reveal { get; set; }
+
+    protected override void OnInitialized()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+
+        if (Guid.TryParse(httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier), out var adminId))
+        {
+            Reveal = RevealCache.Take(adminId);
+        }
+    }
+}

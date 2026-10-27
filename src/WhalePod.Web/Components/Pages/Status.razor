@@ -1,0 +1,48 @@
+@page "/status/{Code:int}"
+@inject IHttpContextAccessor HttpContextAccessor
+
+<SeoHead Title="@Title" Description="@Description" NoIndex="true" />
+
+<div class="status-page">
+    <p class="status-code">HTTP @Code</p>
+    <h1>@Heading</h1>
+    <p>@Description</p>
+    @if (Code == StatusCodes.Status403Forbidden)
+    {
+        <p class="muted">如果你认为这是误判，请确认当前登录账号是否正确；管理员页面只对管理员开放。</p>
+    }
+    <div class="status-actions">
+        <a class="button" href="/">返回信息流</a>
+        <a class="button button-secondary" href="/search">搜索内容</a>
+    </div>
+</div>
+
+@code {
+    [Parameter]
+    public int Code { get; set; }
+
+    private string Heading => Code switch
+    {
+        StatusCodes.Status403Forbidden => "没有访问权限",
+        StatusCodes.Status404NotFound => "页面不存在",
+        StatusCodes.Status429TooManyRequests => "请求过于频繁",
+        >= 500 => "服务暂时不可用",
+        _ => "请求无法完成"
+    };
+
+    private string Title => $"{Heading} - WhalePod";
+
+    private string Description => Code switch
+    {
+        StatusCodes.Status403Forbidden => "当前账号无权访问该页面。",
+        StatusCodes.Status404NotFound => "你访问的页面不存在或已被移除。",
+        StatusCodes.Status429TooManyRequests => "请求过于频繁，请稍后重试。",
+        >= 500 => "服务器处理请求时发生错误，请稍后重试。",
+        _ => "请求未能完成，请返回首页或稍后重试。"
+    };
+
+    protected override void OnInitialized()
+    {
+        StatusCodeResponse.Defer(HttpContextAccessor.HttpContext, Code);
+    }
+}

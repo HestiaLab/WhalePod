@@ -1,0 +1,68 @@
+@page "/tags"
+@layout PublicLayout
+@using WhalePod.Infrastructure.Services
+@inject PublicContentService PublicContent
+
+<SeoHead Title="标签 - WhalePod（鲸群）"
+         Description="按主题浏览 WhalePod 的公开实测记录与产物。"
+         CanonicalPath="/tags" />
+
+<header class="page-masthead">
+    <p class="eyebrow">TAXONOMY / 主题索引</p>
+    <h1>标签</h1>
+    <p class="masthead-lead">按主题浏览公开的实测记录。标签只聚合已通过审核且未删除的帖子。</p>
+</header>
+
+@if (Page is null)
+{
+    <p class="alert alert-error" role="alert">标签加载失败，请稍后重试。</p>
+}
+else if (Page.InvalidCursor)
+{
+    <p class="alert alert-error" role="alert">分页游标无效，请返回第一页。</p>
+    <p><a class="button button-secondary" href="/tags">第一页</a></p>
+}
+else if (Page.Items.Count == 0)
+{
+    <div class="empty-state">
+        <h2>暂无公开标签</h2>
+        <p>标签会随着公开实测出现；也可以先浏览信息流或搜索内容。</p>
+        <p><a href="/">返回信息流</a> · <a href="/search">搜索内容</a></p>
+    </div>
+}
+else
+{
+    <ul class="tag-list tag-cloud" aria-label="公开标签">
+        @foreach (var tag in Page.Items)
+        {
+            <li>
+                <a class="tag" href="/tags/@tag.Slug">@tag.Name · @tag.PostCount</a>
+            </li>
+        }
+    </ul>
+
+    @if (!string.IsNullOrWhiteSpace(Page.NextCursor))
+    {
+        <p><a class="button button-secondary" href="/tags?cursor=@Uri.EscapeDataString(Page.NextCursor)">加载更多标签</a></p>
+    }
+}
+
+<p class="back-link"><a href="/">← 返回信息流</a> · <a href="/search">搜索内容</a></p>
+
+@code {
+    [SupplyParameterFromQuery(Name = "cursor")]
+    public string? Cursor { get; set; }
+
+    private TagPage? Page { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Cursor?.Length > 512)
+        {
+            Page = new TagPage([], null, true);
+            return;
+        }
+
+        Page = await PublicContent.GetTagsAsync(50, Cursor);
+    }
+}

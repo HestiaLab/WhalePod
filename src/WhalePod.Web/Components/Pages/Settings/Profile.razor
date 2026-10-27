@@ -1,0 +1,171 @@
+@page "/settings/profile"
+@attribute [Authorize]
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject ProfileSettingsService ProfileSettings
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>资料设置 - WhalePod</PageTitle>
+
+<header class="page-masthead settings-masthead">
+    <p class="masthead-kicker">账户设置</p>
+    <h1>资料设置</h1>
+    <p class="masthead-lead">维护公开显示名、简介与头像。handle 在当前版本不可修改。</p>
+    <SettingsNav />
+</header>
+
+@if (MessageText is not null)
+{
+    <p role="status">@MessageText</p>
+}
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+@if (ProfileData is null)
+{
+    <p role="alert">无法加载当前账号资料。</p>
+}
+else
+{
+    <p class="page-actions">
+        <a href="/users/@ProfileData.Handle">查看公开资料</a>
+    </p>
+
+    <section aria-labelledby="avatar-heading">
+        <h2 id="avatar-heading">头像</h2>
+        <div class="settings-avatar-preview">
+            @if (HasSafeAvatar)
+            {
+                <img class="settings-avatar-image" src="@ProfileData.AvatarUrl" alt="当前头像" width="96" height="96" />
+            }
+            else
+            {
+                <span class="settings-avatar-image settings-avatar-default" aria-hidden="true">@Initial(ProfileData.DisplayName)</span>
+            }
+            <p class="muted">当前显示的头像会同步出现在帖子与评论中。</p>
+        </div>
+        <form method="post" action="/settings/profile/avatar" enctype="multipart/form-data">
+            <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+            <p>
+                <label for="profile-avatar">上传头像（JPG/PNG/WebP/GIF，≤2 MB）</label><br />
+                <input id="profile-avatar" name="avatar" type="file"
+                       accept="image/jpeg,image/png,image/webp,image/gif" required />
+            </p>
+            <button type="submit">上传头像</button>
+        </form>
+        <form method="post" action="/settings/profile/avatar/clear"
+              onsubmit="return confirm('确认恢复 GitHub 头像或移除当前自定义头像？');">
+            <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+            <button type="submit" class="button-secondary">恢复 GitHub 头像 / 移除自定义头像</button>
+        </form>
+        <p class="muted">
+            图片由服务端按内容识别并重编码为静态 WebP，去除 EXIF/GPS 等元数据；SVG 与可执行文件会被拒绝。
+            若账号保存了 GitHub 头像地址，清除后恢复该地址，否则显示默认头像。
+        </p>
+    </section>
+
+    <form method="post" action="/settings/profile/update">
+        <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+        <h2>公开资料</h2>
+        <p class="muted">显示名与简介会公开显示；handle 由系统分配，暂不支持修改。</p>
+        <p>
+            <label for="profile-handle">handle（当前版本不可修改）</label><br />
+            <input id="profile-handle" value="@ProfileData.Handle" readonly disabled />
+        </p>
+        <p>
+            <label for="profile-display-name">显示名（1-80 字）</label><br />
+            <input id="profile-display-name" name="displayName" value="@ProfileData.DisplayName" maxlength="80" required />
+        </p>
+        <p>
+            <label for="profile-bio">简介（可选，最多 500 字）</label><br />
+            <textarea id="profile-bio" name="bio" rows="5" maxlength="500">@ProfileData.Bio</textarea>
+        </p>
+        <button type="submit">保存资料</button>
+    </form>
+}
+
+<p><a href="/">返回首页</a></p>
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private ProfileEditData? ProfileData { get; set; }
+    private string Token { get; set; } = string.Empty;
+
+    private string? MessageText => Message switch
+    {
+        "updated" => "资料已更新。",
+        "unchanged" => "资料没有变化。",
+        "avatar-updated" => "头像已更新。",
+        "avatar-cleared" => "已恢复 GitHub 头像或移除自定义头像。",
+        _ => null
+    };
+
+    private string? ErrorText => Error switch
+    {
+        "invalid" => "显示名需为 1-80 个字符，简介不超过 500 个字符。",
+        "avatar-file" => "请选择非空头像文件。",
+        "avatar-type" => "头像仅支持 JPG、PNG、WebP、GIF，不允许 SVG 或可执行文件。",
+        "avatar-size" => "头像不能超过 2 MB，且尺寸需在允许范围内。",
+        "avatar-auth" => "当前账号状态或权限不允许修改头像。",
+        "avatar-invalid" => "头像上传失败，请稍后重试。",
+        _ => null
+    };
+
+    private bool HasSafeAvatar => IsSafeAvatarUrl(ProfileData?.AvatarUrl);
+
+    private static string Initial(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value)
+            ? "?"
+            : char.ToUpperInvariant(value.Trim()[0]).ToString();
+    }
+
+    private static bool IsSafeAvatarUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)
+            || value.Any(char.IsControl)
+            || value.Contains('\\'))
+        {
+            return false;
+        }
+
+        if (value.StartsWith('/'))
+        {
+            return !value.StartsWith("//", StringComparison.Ordinal);
+        }
+
+        return Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+
+        if (!Guid.TryParse(httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
+        {
+            StatusCodeResponse.Defer(httpContext, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        ProfileData = await ProfileSettings.GetProfileAsync(userId);
+        if (ProfileData is null)
+        {
+            StatusCodeResponse.NotFound(httpContext);
+        }
+    }
+}

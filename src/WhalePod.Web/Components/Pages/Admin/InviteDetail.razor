@@ -1,0 +1,111 @@
+@page "/admin/invites/{InviteId:guid}"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using WhalePod.Infrastructure.Services
+@inject InviteAdminService InviteAdmin
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>邀请使用记录 - WhalePod</PageTitle>
+
+<h1>邀请使用记录</h1>
+<p class="masthead-lead">邀请码状态、直接邀请与使用记录；不显示明文邀请码。</p>
+
+
+@if (Detail is null)
+{
+    <p role="alert">邀请码不存在或已不可见。</p>
+}
+else
+{
+    <dl>
+        <dt>提示</dt>
+        <dd>@(Detail.Invite.CodeHint ?? "—")</dd>
+        <dt>创建者</dt>
+        <dd>@Detail.Invite.CreatedByHandle</dd>
+        <dt>状态</dt>
+        <dd>@DisplayFormat.State(Detail.Invite.State)</dd>
+        <dt>使用次数</dt>
+        <dd>@Detail.Invite.UsedCount / @Detail.Invite.MaxUses</dd>
+        <dt>创建时间（北京时间）</dt>
+        <dd>@DisplayFormat.Time(Detail.Invite.CreatedAt)</dd>
+        <dt>有效期至（北京时间）</dt>
+        <dd>@DisplayFormat.Time(Detail.Invite.ExpiresAt)</dd>
+        @if (Detail.Invite.DisabledAt is not null)
+        {
+            <dt>停用时间（北京时间）</dt>
+            <dd>@DisplayFormat.Time(Detail.Invite.DisabledAt)</dd>
+        }
+        <dt>备注</dt>
+        <dd>@(Detail.Invite.Note ?? "—")</dd>
+    </dl>
+
+    <h2>邀请树与使用记录</h2>
+    <p>共 @Detail.TotalRedemptions 条直接邀请记录；只显示已成功激活的成员。</p>
+
+    @if (Detail.Redemptions.Count == 0)
+    {
+        <div class="empty-state">
+            <h2>暂无使用记录</h2>
+            <p>邀请对象激活后会出现在这里。</p>
+        </div>
+    }
+    else
+    {
+        <div class="table-scroll" tabindex="0" role="region" aria-label="邀请使用记录">
+            <table class="admin-invite-redemption-table">
+                <caption>第 @Detail.Page 页；时间为北京时间。</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">被邀请成员</th>
+                        <th scope="col">邀请人</th>
+                        <th scope="col">激活时间</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var redemption in Detail.Redemptions)
+                    {
+                        <tr>
+                            <td>@redemption.UserHandle</td>
+                            <td>@redemption.InvitedByHandle</td>
+                            <td>@DisplayFormat.Time(redemption.CreatedAt)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    <nav aria-label="使用记录分页">
+        @if (Detail.Page > 1)
+        {
+            <a href="/admin/invites/@InviteId?page=@(Detail.Page - 1)">上一页</a>
+        }
+        @if (Detail.Page * Detail.PageSize < Detail.TotalRedemptions)
+        {
+            <a href="/admin/invites/@InviteId?page=@(Detail.Page + 1)">下一页</a>
+        }
+    </nav>
+}
+
+<p><a href="/admin/invites">返回邀请码列表</a></p>
+
+@code {
+    [Parameter]
+    public Guid InviteId { get; set; }
+
+    [SupplyParameterFromQuery]
+    public int Page { get; set; } = 1;
+
+    private InviteAdminDetail? Detail { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Detail = await InviteAdmin.GetDetailAsync(InviteId, Page);
+        if (Detail is null)
+        {
+            var httpContext = HttpContextAccessor.HttpContext
+                ?? throw new InvalidOperationException("HttpContext is unavailable.");
+            StatusCodeResponse.NotFound(httpContext);
+        }
+    }
+}

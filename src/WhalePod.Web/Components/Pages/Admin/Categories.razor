@@ -1,0 +1,160 @@
+@page "/admin/categories"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject CategoryAdminService CategoryService
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>板块管理 - WhalePod</PageTitle>
+
+<h1>板块管理</h1>
+
+
+@if (MessageText is not null)
+{
+    <p role="status">@MessageText</p>
+}
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+<section aria-labelledby="create-category-heading">
+    <h2 id="create-category-heading">创建板块</h2>
+    <form method="post" action="/admin/categories/create">
+        <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+        <p>
+            <label for="category-slug">Slug（小写字母、数字、连字符，创建后不可修改）</label>
+            <input id="category-slug" name="slug" maxlength="40" pattern="[a-z0-9][a-z0-9\-]{0,39}" required />
+        </p>
+        <p>
+            <label for="category-name">名称（1-40 字）</label>
+            <input id="category-name" name="name" maxlength="40" required />
+        </p>
+        <p>
+            <label for="category-description">说明（可选，最多 200 字）</label>
+            <textarea id="category-description" name="description" rows="2" maxlength="200"></textarea>
+        </p>
+        <p>
+            <label for="category-order">排序（0-1000，越小越前）</label>
+            <input id="category-order" name="displayOrder" type="number" min="0" max="1000" value="100" required />
+        </p>
+        <button type="submit">创建板块</button>
+    </form>
+</section>
+
+<section aria-labelledby="category-list-heading">
+    <h2 id="category-list-heading">全部板块</h2>
+    @if (Items.Count == 0)
+    {
+        <div class="empty-state">暂无板块。</div>
+    }
+    else
+    {
+        <div class="table-scroll" tabindex="0" role="region" aria-label="全部板块数据表">
+            <table class="admin-category-table">
+                <caption>停用板块不再出现在发帖选择器，历史帖子仍按原链接可访问。</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Slug</th>
+                        <th scope="col">名称 / 说明 / 排序</th>
+                        <th scope="col">公开帖子</th>
+                        <th scope="col">状态</th>
+                        <th scope="col">编辑</th>
+                        <th scope="col">可见性</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in Items)
+                    {
+                        <tr>
+                            <td><code>@item.Slug</code></td>
+                            <td>
+                                <form method="post" action="/admin/categories/@item.Id/update">
+                                    <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                                    <label for="category-name-@item.Id">名称</label>
+                                    <input id="category-name-@item.Id" name="name" value="@item.Name" maxlength="40" required />
+                                    <label for="category-description-@item.Id">说明</label>
+                                    <textarea id="category-description-@item.Id" name="description" rows="2" maxlength="200">@item.Description</textarea>
+                                    <label for="category-order-@item.Id">排序</label>
+                                    <input id="category-order-@item.Id" name="displayOrder" type="number" min="0" max="1000" value="@item.DisplayOrder" required />
+                                    <button type="submit">保存</button>
+                                </form>
+                            </td>
+                            <td>@item.PublicPostCount</td>
+                            <td>@(item.Status == "active" ? "启用" : "停用")</td>
+                            <td><a href="/?category=@item.Slug">查看公开页</a></td>
+                            <td>
+                                <form method="post" action="/admin/categories/@item.Id/visibility">
+                                    <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                                    @if (item.Status == "active")
+                                    {
+                                        <input type="hidden" name="disabled" value="true" />
+                                        <input id="category-impact-@item.Id" type="checkbox" name="confirmImpact" value="true" />
+                                        <label for="category-impact-@item.Id">确认停用（影响 @item.PublicPostCount 篇公开帖子的板块入口）</label>
+                                        <button type="submit">停用</button>
+                                    }
+                                    else
+                                    {
+                                        <input type="hidden" name="disabled" value="false" />
+                                        <button type="submit">启用</button>
+                                    }
+                                </form>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private IReadOnlyList<CategoryAdminItem> Items { get; set; } = [];
+    private string Token { get; set; } = string.Empty;
+
+    private string? MessageText => Message switch
+    {
+        "created" => "板块已创建。",
+        "updated" => "板块已更新。",
+        "disabled" => "板块已停用。",
+        "enabled" => "板块已启用。",
+        "unchanged" => "没有需要变更的内容。",
+        _ => null
+    };
+
+    private string? ErrorText => Error switch
+    {
+        "duplicate" => "Slug 已被其他板块使用。",
+        "invalid" => "板块参数无效：请检查 Slug、名称、说明或排序。",
+        "missing" => "板块不存在。",
+        "impact" => "停用有公开帖子的板块前必须确认影响范围。",
+        _ => null
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+
+        if (!Guid.TryParse(httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier), out var actorId))
+        {
+            StatusCodeResponse.Defer(httpContext, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        Items = await CategoryService.ListAsync(actorId, httpContext.RequestAborted);
+    }
+}

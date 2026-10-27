@@ -1,0 +1,233 @@
+@page "/users/{Handle}"
+@layout PublicLayout
+@using System.Text.Json
+@using WhalePod.Infrastructure.Services
+@using WhalePod.Web.Services
+@inject PublicContentService PublicContent
+@inject PublicSiteLinks SiteLinks
+@inject IHttpContextAccessor HttpContextAccessor
+
+@if (ProfileData is null)
+{
+    <SeoHead Title="用户不存在 - WhalePod" Description="该用户不存在或当前不可见。" NoIndex="true" />
+    <div class="empty-state empty-state-illustrated">
+        <p class="eyebrow">MEMBER NOT FOUND</p>
+        <h1>用户不存在</h1>
+        <p>该用户不存在、已注销或当前不可见。</p>
+        <div class="empty-state-actions">
+            <a class="button" href="/">返回信息流</a>
+            <a class="button button-secondary" href="/search">搜索成员</a>
+        </div>
+    </div>
+}
+else
+{
+    <SeoHead Title="@SeoTitle"
+             Description="@SeoDescription"
+             CanonicalPath="@CanonicalPath" />
+    <JsonLd Json="@PersonJsonLd" />
+
+    <nav class="breadcrumb" aria-label="面包屑">
+        <a href="/">首页</a>
+        <span aria-hidden="true">/</span>
+        <span>成员</span>
+    </nav>
+
+    <section class="profile-hero" aria-labelledby="profile-name">
+        <div class="profile-identity">
+            @if (HasSafeAvatar)
+            {
+                <img class="profile-avatar" src="@ProfileData.AvatarUrl" alt="用户头像" width="112" height="112" />
+            }
+            else
+            {
+                <span class="profile-avatar profile-avatar-monogram" aria-hidden="true">@ProfileInitial</span>
+            }
+
+            <div class="profile-name-block">
+                <p class="eyebrow">MEMBER PROFILE</p>
+                <h1 id="profile-name">@ProfileData.DisplayName</h1>
+                <p class="profile-handle">@("@" + ProfileData.Handle)</p>
+                <p class="profile-bio">@(string.IsNullOrWhiteSpace(ProfileData.Bio) ? "这位成员还没有填写简介。" : ProfileData.Bio)</p>
+            </div>
+
+            <div class="profile-rank">
+                <p class="eyebrow">TRUST</p>
+                <strong>Lv@(ProfileData.TrustLevel)</strong>
+                @if (ProfileData.Badge.Verified)
+                {
+                    <span class="badge badge-verified">设备密钥已验证</span>
+                }
+                else
+                {
+                    <span class="muted">未验证设备</span>
+                }
+            </div>
+        </div>
+
+        <div class="profile-stats">
+            <div><strong>@ProfileData.Stats.Posts</strong><span>帖子</span></div>
+            <div><strong>@ProfileData.Stats.Comments</strong><span>评论</span></div>
+            <div><strong>@ProfileData.Stats.AcceptedAnswers</strong><span>被采纳</span></div>
+            <div><strong>@ProfileData.Stats.LikesReceived</strong><span>获赞</span></div>
+        </div>
+
+        <div class="profile-meta-grid">
+            <div>
+                <p class="eyebrow">JOINED</p>
+                <p>加入时间（北京时间）</p>
+                <strong>@DisplayFormat.Time(ProfileData.JoinedAt)</strong>
+            </div>
+            <div id="device-badge">
+                <p class="eyebrow">DEVICE</p>
+                @if (ProfileData.Badge.Verified)
+                {
+                    <p><span class="badge badge-verified">设备密钥已验证</span></p>
+                    <p class="muted">共 @ProfileData.Badge.ActiveDeviceCount 台活跃设备</p>
+                    @if (ProfileData.Badge.LastVerifiedAt is not null)
+                    {
+                        <p class="muted">最近验证：@DisplayFormat.Time(ProfileData.Badge.LastVerifiedAt.Value)</p>
+                    }
+                }
+                else
+                {
+                    <p class="muted">未验证设备</p>
+                }
+            </div>
+        </div>
+
+        <div class="profile-notes">
+            <p>等级反映社区信任，不代表内容一定正确。</p>
+            <p>验证只证明该成员持有对应设备密钥，不证明运行环境未被篡改；设备所有人可在设置中撤销。</p>
+        </div>
+    </section>
+
+    <section class="profile-posts" aria-labelledby="profile-posts-heading">
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">FIELD NOTES</p>
+                <h2 id="profile-posts-heading">公开帖子</h2>
+            </div>
+            <a href="/search?q=@Uri.EscapeDataString(ProfileData.Handle)&type=users">搜索成员</a>
+        </div>
+
+        @if (CursorError is not null)
+        {
+            <p class="alert alert-error" role="alert">
+                @CursorError
+                <a href="/users/@ProfileData.Handle">返回第一页</a>
+            </p>
+        }
+        else if (Posts is null || Posts.Items.Count == 0)
+        {
+            <div class="empty-state">
+                <h2>该成员暂无公开帖子</h2>
+                <p>帖子通过审核后会出现在这里。</p>
+                <p><a href="/">返回信息流</a></p>
+            </div>
+        }
+        else
+        {
+            <div class="post-list">
+                @foreach (var post in Posts.Items)
+                {
+                    <PostCard Post="post" />
+                }
+            </div>
+            <nav class="pagination" aria-label="分页">
+                @if (!string.IsNullOrWhiteSpace(Posts.NextCursor))
+                {
+                    <a class="button button-secondary"
+                       href="/users/@ProfileData.Handle?cursor=@Uri.EscapeDataString(Posts.NextCursor)">加载更多</a>
+                }
+                else
+                {
+                    <span class="muted">已经到底了。</span>
+                }
+            </nav>
+        }
+    </section>
+}
+
+@code {
+    [Parameter]
+    public string Handle { get; set; } = string.Empty;
+
+    [SupplyParameterFromQuery(Name = "cursor")]
+    public string? Cursor { get; set; }
+
+    private UserProfileView? ProfileData { get; set; }
+    private FeedPage? Posts { get; set; }
+    private string? CursorError { get; set; }
+
+    private bool HasSafeAvatar => IsSafeAvatarUrl(ProfileData?.AvatarUrl);
+
+    private string ProfileInitial => string.IsNullOrWhiteSpace(ProfileData?.DisplayName)
+        ? "?"
+        : char.ToUpperInvariant(ProfileData.DisplayName.Trim()[0]).ToString();
+
+    private static bool IsSafeAvatarUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)
+            || value.Any(char.IsControl)
+            || value.Contains('\\'))
+        {
+            return false;
+        }
+
+        if (value.StartsWith('/'))
+        {
+            return !value.StartsWith("//", StringComparison.Ordinal);
+        }
+
+        return Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp);
+    }
+
+    private string SeoTitle => ProfileData is null
+        ? "用户不存在 - WhalePod"
+        : $"{ProfileData.DisplayName} (@{ProfileData.Handle}) - WhalePod";
+
+    private string SeoDescription => ProfileData is null
+        ? "该用户不存在或当前不可见。"
+        : $"查看 {ProfileData.DisplayName} 的 WhalePod 公开主页、统计与公开帖子。";
+
+    private string CanonicalPath => ProfileData is null ? "/" : $"/users/{ProfileData.Handle}";
+
+    private string PersonJsonLd => JsonSerializer.Serialize(new Dictionary<string, object?>
+    {
+        ["@context"] = "https://schema.org",
+        ["@type"] = "Person",
+        ["name"] = ProfileData?.DisplayName,
+        ["alternateName"] = ProfileData is null ? null : $"@{ProfileData.Handle}",
+        ["description"] = ProfileData?.Bio,
+        ["url"] = ProfileData is null ? null : SiteLinks.Absolute($"/users/{ProfileData.Handle}"),
+        ["image"] = SiteLinks.AbsoluteMedia(ProfileData?.AvatarUrl),
+        ["dateCreated"] = ProfileData?.JoinedAt.ToUniversalTime().ToString("O")
+    });
+
+    protected override async Task OnInitializedAsync()
+    {
+        var http = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+        ProfileData = await PublicContent.GetUserProfileAsync(Handle);
+        if (ProfileData is null)
+        {
+            StatusCodeResponse.NotFound(http);
+            return;
+        }
+
+        if (Cursor?.Length > 512)
+        {
+            CursorError = "分页游标过长。";
+            return;
+        }
+
+        Posts = await PublicContent.GetUserPostsAsync(ProfileData.Handle, 10, Cursor);
+        if (Posts is not null && Posts.InvalidCursor)
+        {
+            CursorError = "分页游标无效。";
+            Posts = null;
+        }
+    }
+}

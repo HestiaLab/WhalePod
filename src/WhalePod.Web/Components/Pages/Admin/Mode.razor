@@ -1,0 +1,110 @@
+@page "/admin/mode"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject SiteModeService SiteMode
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>站点模式 - WhalePod</PageTitle>
+
+<h1>站点模式</h1>
+
+
+@if (MessageText is not null)
+{
+    <p role="status">@MessageText</p>
+}
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+@if (ModeData is null)
+{
+    <p role="alert">无法加载站点模式。</p>
+}
+else
+{
+    <dl>
+        <dt>只读模式</dt>
+        <dd>@(ModeData.ReadOnly ? "已开启：所有写操作暂停，仅允许浏览" : "关闭")</dd>
+        <dt>关闭新登录</dt>
+        <dd>@(ModeData.LoginDisabled ? "已开启：禁止新的 GitHub/开发登录，已有会话保持" : "关闭")</dd>
+        <dt>只读时成员写权限</dt>
+        <dd>@(ModeData.ReadOnlyAllowMemberWrite ? "保留：已认证成员仍可写（账号状态门禁仍生效）" : "不保留：所有写操作暂停")</dd>
+        <dt>最近变更</dt>
+        <dd>@DisplayFormat.Time(ModeData.UpdatedAt)</dd>
+    </dl>
+
+    <form method="post" action="/admin/mode/update"
+          onsubmit="return confirm('确认变更站点模式？该操作会立即影响全站写操作或新登录。');">
+        <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+        <p>
+            <label>
+                <input type="checkbox" name="readOnly" value="true" checked="@ModeData.ReadOnly" />
+                开启只读模式（写操作返回 403，原因 read_only）
+            </label>
+        </p>
+        <p>
+            <label>
+                <input type="checkbox" name="loginDisabled" value="true" checked="@ModeData.LoginDisabled" />
+                关闭新登录（已有会话不受影响）
+            </label>
+        </p>
+        <p>
+            <label>
+                <input type="checkbox" name="readOnlyAllowMemberWrite" value="true" checked="@ModeData.ReadOnlyAllowMemberWrite" />
+                只读模式下保留已认证成员写权限（Agent 服务令牌仍被阻断）
+            </label>
+        </p>
+        <p>
+            <label>
+                <input type="checkbox" name="confirmMode" value="true" />
+                我确认理解影响；开启任一模式时必选
+            </label>
+        </p>
+        <button type="submit">保存站点模式</button>
+    </form>
+
+    <p class="alert alert-warning" role="none">
+        只读模式默认暂停发帖、评论、点赞、举报、设备、设置、审核与 Agent 写入，仅保留浏览、搜索、登出、复制计数和管理员模式开关；
+        如保留成员写权限，仍需通过账号状态、CSRF、资源所有权与服务层授权。关闭新登录不会使已有会话失效。
+    </p>
+}
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private SiteModeData? ModeData { get; set; }
+    private string Token { get; set; } = string.Empty;
+
+    private string? MessageText => Message switch
+    {
+        "saved" => "站点模式已保存。",
+        _ => null
+    };
+
+    private string? ErrorText => Error switch
+    {
+        "confirm" => "开启只读或关闭登录前必须确认影响。",
+        "forbidden" => "当前账号无权变更站点模式。",
+        "validation" => "站点模式参数无效。",
+        _ => null
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+        ModeData = await SiteMode.GetAsync(httpContext.RequestAborted);
+    }
+}

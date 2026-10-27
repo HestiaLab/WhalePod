@@ -1,0 +1,74 @@
+@using WhalePod.Web.Services
+@inject PublicSiteLinks SiteLinks
+
+<PageTitle>@Title</PageTitle>
+<HeadContent>
+    <meta name="description" content="@Description" />
+    @if (!string.IsNullOrWhiteSpace(CanonicalPath))
+    {
+        <link rel="canonical" href="@SiteLinks.Absolute(CanonicalPath)" />
+    }
+    @if (NoIndex)
+    {
+        <meta name="robots" content="noindex, nofollow" />
+    }
+    else
+    {
+        <meta name="robots" content="index, follow" />
+    }
+    <meta property="og:site_name" content="WhalePod（鲸群）" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:type" content="@OpenGraphType" />
+    <meta property="og:title" content="@Title" />
+    <meta property="og:description" content="@Description" />
+    @if (!string.IsNullOrWhiteSpace(CanonicalPath))
+    {
+        <meta property="og:url" content="@SiteLinks.Absolute(CanonicalPath)" />
+    }
+    @if (!string.IsNullOrWhiteSpace(ImageUrl))
+    {
+        <meta property="og:image" content="@SiteLinks.AbsoluteMedia(ImageUrl)" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:image" content="@SiteLinks.AbsoluteMedia(ImageUrl)" />
+    }
+    else
+    {
+        <meta name="twitter:card" content="summary" />
+    }
+    <meta name="twitter:title" content="@Title" />
+    <meta name="twitter:description" content="@Description" />
+    @if (PublishedAt is not null)
+    {
+        <meta property="article:published_time" content="@(PublishedAt.Value.ToUniversalTime().ToString("O"))" />
+    }
+    @if (ModifiedAt is not null)
+    {
+        <meta property="article:modified_time" content="@(ModifiedAt.Value.ToUniversalTime().ToString("O"))" />
+    }
+</HeadContent>
+
+@code {
+    [Parameter, EditorRequired]
+    public string Title { get; set; } = "WhalePod（鲸群）";
+
+    [Parameter, EditorRequired]
+    public string Description { get; set; } = string.Empty;
+
+    [Parameter]
+    public string? CanonicalPath { get; set; }
+
+    [Parameter]
+    public string OpenGraphType { get; set; } = "website";
+
+    [Parameter]
+    public string? ImageUrl { get; set; }
+
+    [Parameter]
+    public bool NoIndex { get; set; }
+
+    [Parameter]
+    public DateTimeOffset? PublishedAt { get; set; }
+
+    [Parameter]
+    public DateTimeOffset? ModifiedAt { get; set; }
+}

@@ -1,0 +1,194 @@
+@page "/admin/users"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using System.Security.Claims
+@using WhalePod.Infrastructure.Services
+@inject AdminUserService UserService
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>用户管理 - WhalePod</PageTitle>
+
+<h1>用户管理</h1>
+
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+<section aria-labelledby="user-filter-heading">
+    <h2 id="user-filter-heading">查询</h2>
+    <form class="filter-form" method="get" action="/admin/users">
+        <p>
+            <label for="user-query">Handle 或显示名</label>
+            <input id="user-query" name="query" value="@Query" maxlength="80" />
+        </p>
+        <p>
+            <label for="user-status">状态</label>
+            <select id="user-status" name="status">
+                <option value="">全部</option>
+                <option value="active" selected="@(Status == "active")">正常</option>
+                <option value="muted" selected="@(Status == "muted")">禁言</option>
+                <option value="banned" selected="@(Status == "banned")">封禁</option>
+                <option value="deleted" selected="@(Status == "deleted")">已注销</option>
+            </select>
+        </p>
+        <p>
+            <label for="user-trust">信任等级</label>
+            <select id="user-trust" name="trustLevel">
+                <option value="">全部</option>
+                @for (var level = 0; level <= 4; level++)
+                {
+                    <option value="@level" selected="@(TrustLevel == level)">@level</option>
+                }
+            </select>
+        </p>
+        <div class="form-actions">
+            <button type="submit">查询</button>
+            <a href="/admin/users">重置</a>
+        </div>
+    </form>
+</section>
+
+@if (Page is null)
+{
+    <p role="alert">无法加载用户列表。</p>
+}
+else if (Page.Items.Count == 0)
+{
+    <div class="empty-state">
+        <h2>没有符合条件的用户</h2>
+        <p>清除查询条件，或换一个 Handle、显示名与状态。</p>
+        <p><a href="/admin/users">清除查询条件</a></p>
+    </div>
+}
+else
+{
+    <div class="table-scroll" tabindex="0" role="region" aria-label="用户列表">
+        <table class="admin-user-table">
+            <caption>列表不展示邮箱、GitHub ID 或令牌；详情页提供设备与审计入口。</caption>
+            <thead>
+                <tr>
+                    <th scope="col">Handle / 显示名</th>
+                    <th scope="col">状态</th>
+                    <th scope="col">信任等级</th>
+                    <th scope="col">角色</th>
+                    <th scope="col">激活 / 最近登录</th>
+                    <th scope="col">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var user in Page.Items)
+                {
+                    <tr>
+                        <td>
+                            <a href="/users/@user.Handle">@user.Handle</a><br />
+                            <span class="muted">@user.DisplayName</span>
+                        </td>
+                        <td>
+                            @StatusLabel(user.Status)
+                            @if (!string.IsNullOrWhiteSpace(user.StatusReason))
+                            {
+                                <br /><span class="muted">@user.StatusReason</span>
+                            }
+                            @if (user.StatusExpiresAt is not null)
+                            {
+                                <br /><span class="muted">至 @DisplayFormat.Time(user.StatusExpiresAt.Value)</span>
+                            }
+                        </td>
+                        <td>@user.TrustLevel</td>
+                        <td>@(user.Role == "admin" ? "管理员" : "成员")</td>
+                        <td>
+                            @(user.ActivatedAt is null ? "未激活" : DisplayFormat.Time(user.ActivatedAt.Value))<br />
+                            <span class="muted">@DisplayFormat.Time(user.LastLoginAt)</span>
+                        </td>
+                        <td><a class="button button-secondary" href="/admin/users/@user.Id">管理</a></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    @if (Page.NextCursor is not null)
+    {
+        <p><a href="@NextPageUrl()">下一页</a></p>
+    }
+}
+
+@code {
+    [SupplyParameterFromQuery]
+    public string? Query { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Status { get; set; }
+
+    [SupplyParameterFromQuery]
+    public int? TrustLevel { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Cursor { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private AdminUserPage? Page { get; set; }
+
+    private string? ErrorText => Error switch
+    {
+        "validation" => "查询条件无效。",
+        "cursor" => "分页游标已失效，请重新查询。",
+        _ => null
+    };
+
+    private static string StatusLabel(string status) => status switch
+    {
+        "active" => "正常",
+        "muted" => "禁言",
+        "banned" => "封禁",
+        "deleted" => "已注销",
+        _ => status
+    };
+
+    private string NextPageUrl()
+    {
+        var parameters = new List<string>
+        {
+            $"cursor={Uri.EscapeDataString(Page!.NextCursor!)}"
+        };
+        if (!string.IsNullOrWhiteSpace(Query))
+        {
+            parameters.Add($"query={Uri.EscapeDataString(Query)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(Status))
+        {
+            parameters.Add($"status={Uri.EscapeDataString(Status)}");
+        }
+
+        if (TrustLevel is not null)
+        {
+            parameters.Add($"trustLevel={TrustLevel}");
+        }
+
+        return $"/admin/users?{string.Join("&", parameters)}";
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+        if (!Guid.TryParse(httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier), out var actorId))
+        {
+            StatusCodeResponse.Defer(httpContext, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        Page = await UserService.ListAsync(
+            actorId,
+            Query,
+            Status,
+            TrustLevel,
+            20,
+            Cursor,
+            httpContext.RequestAborted);
+    }
+}

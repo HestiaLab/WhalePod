@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>whalepod-agent</AssemblyName>
+    <Version>0.1.0</Version>
+    <UserSecretsId>dotnet-WhalePod.Agent-97007423-1104-443c-a771-dc1d505339e0</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WhalePod.Contracts\WhalePod.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

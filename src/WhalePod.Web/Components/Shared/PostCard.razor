@@ -1,0 +1,110 @@
+@using WhalePod.Infrastructure.Services
+
+<article class="post-card @(Featured ? "post-card-featured" : null) @(string.IsNullOrWhiteSpace(Post.ThumbnailUrl) ? "post-card-no-thumb" : null)">
+    <div class="post-card-body">
+        <div class="post-card-top">
+            <a class="post-category" href="/?category=@Uri.EscapeDataString(Post.Category.Slug)">@Post.Category.Name</a>
+            <span class="meta-separator" aria-hidden="true"></span>
+            <time class="mono-meta" datetime="@(Post.CreatedAt.ToUniversalTime().ToString("O"))">@DisplayFormat.Time(Post.CreatedAt)</time>
+            @if (Post.IsSolved)
+            {
+                <span class="badge badge-solved">已解决</span>
+            }
+        </div>
+
+        <h2 class="post-card-title">
+            <a href="/posts/@Post.Id" title="@Post.Title">@Post.Title</a>
+        </h2>
+
+        <p class="post-excerpt">@Post.Excerpt</p>
+
+        <div class="post-card-signals">
+            <span class="env-chip">
+                <span class="signal-dot" aria-hidden="true"></span>
+                <span class="env-label">环境</span>@EnvironmentSummary
+            </span>
+            @if (Post.Tags.Count > 0)
+            {
+                <ul class="tag-list" aria-label="标签">
+                    @foreach (var tag in Post.Tags)
+                    {
+                        <li><a class="tag" href="/tags/@tag.Slug">@tag.Name</a></li>
+                    }
+                </ul>
+            }
+        </div>
+
+        <div class="post-card-footer">
+            <div class="post-author">
+                <span class="avatar-initial" aria-hidden="true">@AuthorInitial</span>
+                <span class="author-meta">
+                    <a href="/users/@Post.Author.Handle">@Post.Author.DisplayName</a>
+                    <span class="author-level">Lv@(Post.Author.TrustLevel)</span>
+                </span>
+                @if (Post.Author.Badge.Verified)
+                {
+                    <a class="badge badge-verified" href="/users/@Post.Author.Handle#device-badge">设备已验证</a>
+                }
+            </div>
+            <div class="post-counts" aria-label="互动统计">
+                <span>赞 @Post.Counts.Likes</span>
+                <span aria-hidden="true">·</span>
+                <span>评 @Post.Counts.Comments</span>
+                <span aria-hidden="true">·</span>
+                <span>产物 @Post.Counts.Artifacts</span>
+            </div>
+        </div>
+
+        @if (Post.FirstArtifactId is not null)
+        {
+            <a class="post-artifact-link"
+               href="/posts/@Post.Id#artifact-@Post.FirstArtifactId"
+               title="打开帖子并复制首份产物">
+                <span>含产物 · 复制首份产物</span>
+                <span aria-hidden="true">→</span>
+            </a>
+        }
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(Post.ThumbnailUrl))
+    {
+        <img class="post-thumb" src="@Post.ThumbnailUrl" alt="" loading="lazy"
+             width="@(Featured ? 220 : 168)" height="@(Featured ? 156 : 126)" />
+    }
+</article>
+
+@code {
+    [Parameter, EditorRequired]
+    public PostSummaryView Post { get; set; } = default!;
+
+    [Parameter]
+    public bool Featured { get; set; }
+
+    private string AuthorInitial => string.IsNullOrWhiteSpace(Post.Author.DisplayName)
+        ? "?"
+        : char.ToUpperInvariant(Post.Author.DisplayName.Trim()[0]).ToString();
+
+    private string EnvironmentSummary
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(Post.Environment.KernelVersion))
+            {
+                parts.Add($"内核 {Post.Environment.KernelVersion}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(Post.Environment.Platform))
+            {
+                parts.Add(Post.Environment.Platform);
+            }
+
+            if (!string.IsNullOrWhiteSpace(Post.Environment.Model))
+            {
+                parts.Add($"模型 {Post.Environment.Model}");
+            }
+
+            return parts.Count == 0 ? "未标注" : string.Join(" · ", parts);
+        }
+    }
+}

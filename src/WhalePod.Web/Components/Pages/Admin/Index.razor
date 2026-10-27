@@ -1,0 +1,81 @@
+@page "/admin"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+
+<PageTitle>管理后台 - WhalePod</PageTitle>
+
+<h1>管理后台</h1>
+
+<p class="masthead-lead">所有入口均要求管理员权限；每次请求由服务端查询数据库角色与账号状态。</p>
+
+<section class="admin-dashboard" aria-labelledby="admin-overview-heading">
+    <div class="admin-section-head">
+        <div>
+            <p class="eyebrow">GOVERNANCE</p>
+            <h2 id="admin-overview-heading">治理入口</h2>
+        </div>
+        <p class="muted">审核、举报、用户与站点配置都在这里闭环。</p>
+    </div>
+
+    <div class="admin-card-grid">
+        <a class="admin-card" href="/admin/moderation">
+            <span class="admin-card-index">01</span>
+            <p class="eyebrow">MODERATION</p>
+            <strong>审核队列</strong>
+            <p>处理待审帖子与评论，预览正文、产物与 AI 建议，并写审核记录。</p>
+            <span class="admin-card-arrow" aria-hidden="true">→</span>
+        </a>
+        <a class="admin-card" href="/admin/reports">
+            <span class="admin-card-index">02</span>
+            <p class="eyebrow">REPORTS</p>
+            <strong>举报处理</strong>
+            <p>处理举报、内容动作与账号处罚，并通知举报人与目标作者。</p>
+            <span class="admin-card-arrow" aria-hidden="true">→</span>
+        </a>
+        <a class="admin-card" href="/admin/users">
+            <span class="admin-card-index">03</span>
+            <p class="eyebrow">MEMBERS</p>
+            <strong>用户管理</strong>
+            <p>查询用户、禁言、封禁、解封与调整信任等级，进入设备历史与审计。</p>
+            <span class="admin-card-arrow" aria-hidden="true">→</span>
+        </a>
+        <a class="admin-card" href="/admin/mode">
+            <span class="admin-card-index">04</span>
+            <p class="eyebrow">SITE MODE</p>
+            <strong>站点模式</strong>
+            <p>开启只读模式、关闭新登录，并控制只读时是否保留成员写入。</p>
+            <span class="admin-card-arrow" aria-hidden="true">→</span>
+        </a>
+        <a class="admin-card" href="/admin/ai">
+            <span class="admin-card-index">05</span>
+            <p class="eyebrow">AI REVIEW</p>
+            <strong>AI 审核</strong>
+            <p>管理 AI 开关、暂停建议、预算、模型与建议质量，人工裁决不变。</p>
+            <span class="admin-card-arrow" aria-hidden="true">→</span>
+        </a>
+        <a class="admin-card" href="/admin/system">
+            <span class="admin-card-index">06</span>
+            <p class="eyebrow">SYSTEM</p>
+            <strong>系统健康</strong>
+            <p>查看数据库、邮件队列、Agent、保留期清理与备份状态。</p>
+            <span class="admin-card-arrow" aria-hidden="true">→</span>
+        </a>
+    </div>
+</section>
+
+<section class="admin-note-panel" aria-labelledby="admin-secondary-heading">
+    <div>
+        <p class="eyebrow">ALSO IN THE CONSOLE</p>
+        <h2 id="admin-secondary-heading">社区与系统配置</h2>
+        <p class="muted">板块/标签管理影响公开页面；邀请码、服务账号、审计与敏感词在侧栏分组中。</p>
+    </div>
+    <div class="admin-note-links">
+        <a href="/admin/categories">板块管理</a>
+        <a href="/admin/tags">标签管理</a>
+        <a href="/admin/invites">邀请码</a>
+        <a href="/admin/service-accounts">服务账号</a>
+        <a href="/admin/audit">审计日志</a>
+        <a href="/admin/moderation/words">敏感词</a>
+        <a href="/admin/appeals">申诉复核</a>
+    </div>
+</section>

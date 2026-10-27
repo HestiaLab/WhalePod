@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <base href="/" />
+    <script>
+        (function () {
+            try {
+                var theme = localStorage.getItem('whalepod-theme');
+                if (theme === 'dark' || theme === 'light') {
+                    document.documentElement.dataset.theme = theme;
+                } else {
+                    delete document.documentElement.dataset.theme;
+                }
+            } catch (error) {
+            }
+        })();
+    </script>
+    <ResourcePreloader />
+    <link rel="stylesheet" href="@Assets["app.css"]" />
+    <link rel="stylesheet" href="@Assets["WhalePod.Web.styles.css"]" />
+    <noscript>
+        <style>
+            #theme-toggle,
+            #editor-preview-toggle,
+            [data-copy-target] {
+                display: none !important;
+            }
+        </style>
+    </noscript>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="alternate" type="application/rss+xml" title="WhalePod RSS" href="/rss.xml" />
+    <ImportMap />
+    <HeadOutlet />
+</head>
+
+<body>
+    <div id="nav-progress" class="nav-progress" role="progressbar" aria-label="页面加载中" hidden></div>
+    <div id="copy-status" class="sr-only" role="status" aria-live="polite"></div>
+    <Routes />
+    <ReconnectModal />
+    <script src="@Assets["_framework/blazor.web.js"]"></script>
+    <script>
+        (function () {
+            function setCopyStatus(message) {
+                var status = document.getElementById('copy-status');
+                if (status) {
+                    status.textContent = message;
+                }
+            }
+
+            function showProgress() {
+                var progress = document.getElementById('nav-progress');
+                if (progress) {
+                    progress.hidden = false;
+                }
+            }
+
+            function hideProgress() {
+                var progress = document.getElementById('nav-progress');
+                if (progress) {
+                    progress.hidden = true;
+                }
+            }
+
+            function applyThemeLabel(toggle, mode) {
+                var labels = { auto: '自动', light: '浅色', dark: '深色' };
+                var label = toggle.querySelector('.theme-label');
+                if (label) {
+                    label.textContent = labels[mode] || '自动';
+                } else {
+                    toggle.textContent = labels[mode] || '自动';
+                }
+                toggle.setAttribute('aria-label', '切换主题，当前：' + (labels[mode] || '自动'));
+                toggle.dataset.themeMode = mode;
+            }
+
+            function initializeThemeToggle() {
+                var toggle = document.getElementById('theme-toggle');
+                if (!toggle || toggle.dataset.initialized === 'true') {
+                    return;
+                }
+
+                toggle.dataset.initialized = 'true';
+                var stored = 'auto';
+                try {
+                    var saved = localStorage.getItem('whalepod-theme');
+                    if (saved === 'light' || saved === 'dark' || saved === 'auto') {
+                        stored = saved;
+                    }
+                } catch (error) {
+                }
+                applyThemeLabel(toggle, stored);
+
+                toggle.addEventListener('click', function () {
+                    var root = document.documentElement;
+                    var current = toggle.dataset.themeMode || 'auto';
+                    var next = current === 'auto' ? 'light' : current === 'light' ? 'dark' : 'auto';
+                    if (next === 'auto') {
+                        delete root.dataset.theme;
+                    } else {
+                        root.dataset.theme = next;
+                    }
+
+                    try {
+                        localStorage.setItem('whalepod-theme', next);
+                    } catch (error) {
+                    }
+
+                    applyThemeLabel(toggle, next);
+                });
+            }
+
+            function initializeCopyButtons() {
+                if (document.documentElement.dataset.copyInitialized === 'true') {
+                    return;
+                }
+
+                document.documentElement.dataset.copyInitialized = 'true';
+                document.addEventListener('click', function (event) {
+                    var button = event.target.closest('[data-copy-target]');
+                    if (!button) {
+                        return;
+                    }
+
+                    var target = document.getElementById(button.getAttribute('data-copy-target'));
+                    if (!target) {
+                        return;
+                    }
+
+                    var text = target.innerText;
+                    function recordCopy() {
+                        var artifactId = button.getAttribute('data-copy-artifact-id');
+                        if (!artifactId) {
+                            return;
+                        }
+
+                        fetch('/internal/counters/copy', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ artifactId: artifactId })
+                        }).catch(function () {
+                        });
+                    }
+
+                    function copyFailed() {
+                        window.getSelection().selectAllChildren(target);
+                        setCopyStatus('自动复制失败，请按 Ctrl+C 手动复制。');
+                        button.textContent = '请手动复制';
+                    }
+
+                    function copySucceeded(original) {
+                        setCopyStatus('已复制到剪贴板。');
+                        button.textContent = '已复制';
+                        recordCopy();
+                        window.setTimeout(function () {
+                            button.textContent = original;
+                        }, 1500);
+                    }
+
+                    var original = button.textContent;
+                    if (!navigator.clipboard) {
+                        copyFailed();
+                        return;
+                    }
+
+                    navigator.clipboard.writeText(text).then(function () {
+                        copySucceeded(original);
+                    }).catch(copyFailed);
+                });
+            }
+
+            function initializeNavigationProgress() {
+                if (document.documentElement.dataset.navInitialized === 'true') {
+                    return;
+                }
+
+                document.documentElement.dataset.navInitialized = 'true';
+                document.addEventListener('click', function (event) {
+                    var link = event.target.closest('a[href]');
+                    if (!link || event.defaultPrevented || event.button !== 0
+                        || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+                        return;
+                    }
+
+                    var href = link.getAttribute('href');
+                    if (!href || href.startsWith('#') || href.startsWith('mailto:')
+                        || link.target === '_blank' || link.hasAttribute('download')) {
+                        return;
+                    }
+
+                    try {
+                        var url = new URL(href, window.location.href);
+                        if (url.origin === window.location.origin) {
+                            showProgress();
+                        }
+                    } catch (error) {
+                    }
+                });
+
+                document.addEventListener('submit', function (event) {
+                    if (!event.defaultPrevented) {
+                        showProgress();
+                    }
+                });
+                window.addEventListener('pageshow', hideProgress);
+            }
+
+            function clearEditorDraftOnSuccess() {
+                if (!window.location.pathname.startsWith('/posts/')) {
+                    return;
+                }
+
+                var message = new URLSearchParams(window.location.search).get('message');
+                var submitted = false;
+                try {
+                    submitted = sessionStorage.getItem('whalepod-editor-submitted') === 'true';
+                } catch (error) {
+                }
+                if (message === 'post-pending' && submitted) {
+                    try {
+                        localStorage.removeItem('whalepod-editor-draft');
+                        sessionStorage.removeItem('whalepod-editor-submitted');
+                    } catch (error) {
+                    }
+                }
+            }
+
+            function initializeEditor() {
+                var form = document.querySelector('[data-editor-form]');
+                if (!form || form.dataset.editorInitialized === 'true') {
+                    return;
+                }
+
+                form.dataset.editorInitialized = 'true';
+                try {
+                    sessionStorage.removeItem('whalepod-editor-submitted');
+                } catch (error) {
+                }
+                var storageKey = 'whalepod-editor-draft';
+                var banner = document.getElementById('draft-banner');
+                var savedAt = document.getElementById('draft-saved-at');
+                var titleInput = form.elements['title'];
+                var bodyInput = form.elements['bodyMd'];
+                var previewButton = document.getElementById('editor-preview-toggle');
+                var previewStatus = document.getElementById('editor-preview-status');
+                var preview = document.getElementById('editor-preview');
+                var bodyBlock = document.getElementById('editor-body-block');
+                var previewing = false;
+                var saveTimer = null;
+
+                function field(name) {
+                    var element = form.elements[name];
+                    return element ? element.value : '';
+                }
+
+                function collectDraft() {
+                    var tags = Array.prototype.map.call(
+                        form.querySelectorAll('input[name="tags"]:checked'),
+                        function (element) { return element.value; });
+                    return {
+                        title: field('title'),
+                        categoryId: field('categoryId'),
+                        bodyMd: field('bodyMd'),
+                        kernel: field('kernel'),
+                        platform: field('platform'),
+                        model: field('model'),
+                        tags: tags,
+                        artifactKind: field('artifactKind'),
+                        artifactName: field('artifactName'),
+                        artifactNote: field('artifactNote'),
+                        artifactContent: field('artifactContent'),
+                        imageIds: field('imageIds'),
+                        savedAt: new Date().toISOString()
+                    };
+                }
+
+                function hasContent(draft) {
+                    return Boolean(draft.title || draft.bodyMd || draft.kernel || draft.platform
+                        || draft.model || draft.artifactName || draft.artifactContent
+                        || draft.imageIds || (draft.tags && draft.tags.length));
+                }
+
+                function saveDraft() {
+                    var draft = collectDraft();
+                    if (!hasContent(draft)) {
+                        return;
+                    }
+
+                    try {
+                        localStorage.setItem(storageKey, JSON.stringify(draft));
+                    } catch (error) {
+                    }
+                    saveTimer = null;
+                }
+
+                function scheduleSave() {
+                    window.clearTimeout(saveTimer);
+                    saveTimer = window.setTimeout(saveDraft, 400);
+                }
+
+                function setValue(name, value) {
+                    var element = form.elements[name];
+                    if (element && typeof value === 'string') {
+                        element.value = value;
+                    }
+                }
+
+                function applyDraft(draft) {
+                    setValue('title', draft.title);
+                    setValue('categoryId', draft.categoryId);
+                    setValue('bodyMd', draft.bodyMd);
+                    setValue('kernel', draft.kernel);
+                    setValue('platform', draft.platform);
+                    setValue('model', draft.model);
+                    setValue('artifactKind', draft.artifactKind);
+                    setValue('artifactName', draft.artifactName);
+                    setValue('artifactNote', draft.artifactNote);
+                    setValue('artifactContent', draft.artifactContent);
+                    setValue('imageIds', draft.imageIds);
+                    var selected = Array.isArray(draft.tags) ? draft.tags : [];
+                    Array.prototype.forEach.call(
+                        form.querySelectorAll('input[name="tags"]'),
+                        function (element) {
+                            element.checked = selected.indexOf(element.value) >= 0;
+                        });
+                }
+
+                function hideBanner() {
+                    if (banner) {
+                        banner.hidden = true;
+                    }
+                }
+
+                var resume = document.getElementById('draft-resume');
+                var discard = document.getElementById('draft-discard');
+                if (resume) {
+                    resume.addEventListener('click', function () {
+                        var draft = readDraft();
+                        if (draft) {
+                            applyDraft(draft);
+                            hideBanner();
+                            if (titleInput) {
+                                titleInput.focus();
+                            }
+                        }
+                    });
+                }
+
+                if (discard) {
+                    discard.addEventListener('click', function () {
+                        window.clearTimeout(saveTimer);
+                        saveTimer = null;
+                        try {
+                            localStorage.removeItem(storageKey);
+                        } catch (error) {
+                        }
+                        hideBanner();
+                    });
+                }
+
+                function readDraft() {
+                    try {
+                        var raw = localStorage.getItem(storageKey);
+                        if (!raw) {
+                            return null;
+                        }
+
+                        var parsed = JSON.parse(raw);
+                        return parsed && typeof parsed === 'object' ? parsed : null;
+                    } catch (error) {
+                        return null;
+                    }
+                }
+
+                var existing = readDraft();
+                if (existing && banner && hasContent(existing)) {
+                    if (savedAt) {
+                        var when = new Date(existing.savedAt);
+                        savedAt.textContent = Number.isNaN(when.getTime())
+                            ? '时间未知'
+                            : when.toLocaleString('zh-CN', { hour12: false });
+                    }
+                    banner.hidden = false;
+                }
+
+                form.addEventListener('input', scheduleSave);
+                form.addEventListener('change', scheduleSave);
+                form.addEventListener('submit', function () {
+                    window.clearTimeout(saveTimer);
+                    saveTimer = null;
+                    try {
+                        sessionStorage.setItem('whalepod-editor-submitted', 'true');
+                    } catch (error) {
+                    }
+                });
+
+                if (previewButton && preview && bodyBlock && bodyInput) {
+                    previewButton.addEventListener('click', function () {
+                        if (previewing) {
+                            previewing = false;
+                            preview.hidden = true;
+                            bodyBlock.hidden = false;
+                            previewButton.textContent = '预览';
+                            previewButton.setAttribute('aria-expanded', 'false');
+                            if (previewStatus) {
+                                previewStatus.textContent = '';
+                            }
+                            return;
+                        }
+
+                        if (!bodyInput.value.trim()) {
+                            if (previewStatus) {
+                                previewStatus.textContent = '请先输入正文。';
+                            }
+                            return;
+                        }
+
+                        var tokenInput = form.querySelector('input[name="__RequestVerificationToken"]');
+                        if (!tokenInput) {
+                            if (previewStatus) {
+                                previewStatus.textContent = '预览失败：缺少防伪令牌，请刷新后重试。';
+                            }
+                            return;
+                        }
+
+                        var data = new FormData();
+                        data.append('__RequestVerificationToken', tokenInput.value);
+                        data.append('bodyMd', bodyInput.value);
+                        previewButton.disabled = true;
+                        if (previewStatus) {
+                            previewStatus.textContent = '正在生成预览…';
+                        }
+
+                        fetch('/editor/preview', {
+                            method: 'POST',
+                            body: data,
+                            credentials: 'same-origin'
+                        }).then(function (response) {
+                            if (!response.ok) {
+                                throw new Error('preview failed');
+                            }
+                            return response.text();
+                        }).then(function (html) {
+                            preview.innerHTML = html;
+                            preview.hidden = false;
+                            bodyBlock.hidden = true;
+                            previewing = true;
+                            previewButton.textContent = '返回编辑';
+                            previewButton.setAttribute('aria-expanded', 'true');
+                            if (previewStatus) {
+                                previewStatus.textContent = '预览使用与发布相同的 Markdown 清洗管线。';
+                            }
+                        }).catch(function () {
+                            if (previewStatus) {
+                                previewStatus.textContent = '预览失败，请继续编辑；正文未丢失。';
+                            }
+                        }).finally(function () {
+                            previewButton.disabled = false;
+                        });
+                    });
+                }
+            }
+
+            function initializeDeviceForm() {
+                var form = document.querySelector('[data-device-form]');
+                if (!form || form.dataset.deviceInitialized === 'true') {
+                    return;
+                }
+
+                form.dataset.deviceInitialized = 'true';
+                var payload = document.getElementById('device-payload');
+                var preflight = document.getElementById('device-preflight');
+                if (!payload || !preflight) {
+                    return;
+                }
+
+                var manual = {
+                    challenge: document.getElementById('manual-challenge'),
+                    handle: document.getElementById('manual-handle'),
+                    timestamp: document.getElementById('manual-timestamp'),
+                    kernel: document.getElementById('manual-kernel'),
+                    platform: document.getElementById('manual-platform'),
+                    publicKey: document.getElementById('manual-public-key'),
+                    signature: document.getElementById('manual-signature')
+                };
+                var timer = null;
+
+                function extractJson(text) {
+                    var start = text.indexOf('{');
+                    if (start < 0) {
+                        return null;
+                    }
+
+                    var depth = 0;
+                    var inString = false;
+                    var escaped = false;
+                    for (var index = start; index < text.length; index++) {
+                        var character = text[index];
+                        if (inString) {
+                            if (escaped) {
+                                escaped = false;
+                            } else if (character === '\\') {
+                                escaped = true;
+                            } else if (character === '"') {
+                                inString = false;
+                            }
+
+                            continue;
+                        }
+
+                        if (character === '"') {
+                            inString = true;
+                        } else if (character === '{') {
+                            depth++;
+                        } else if (character === '}') {
+                            depth--;
+                            if (depth === 0) {
+                                return text.slice(start, index + 1);
+                            }
+                        }
+                    }
+
+                    return null;
+                }
+
+                function setManual(name, value) {
+                    var element = manual[name];
+                    if (element && value !== undefined && value !== null) {
+                        element.value = String(value);
+                    }
+                }
+
+                function update() {
+                    var text = payload.value.trim();
+                    if (!text) {
+                        preflight.textContent = '尚未识别到有效 JSON；可以粘贴 CLI 输出，或在下方手动填写。';
+                        return;
+                    }
+
+                    var json = extractJson(text);
+                    if (!json) {
+                        preflight.textContent = '未识别到有效 JSON；可以粘贴完整终端输出，或在下方手动填写。';
+                        return;
+                    }
+
+                    var data;
+                    try {
+                        data = JSON.parse(json);
+                    } catch (error) {
+                        preflight.textContent = 'JSON 解析失败，请检查粘贴内容或在下方手动填写。';
+                        return;
+                    }
+
+                    if (!data || typeof data !== 'object') {
+                        preflight.textContent = 'JSON 不是对象，请检查粘贴内容。';
+                        return;
+                    }
+
+                    setManual('challenge', data.challenge);
+                    setManual('handle', data.handle);
+                    setManual('timestamp', data.timestamp);
+                    setManual('kernel', data.kernelVersion);
+                    setManual('platform', data.platform);
+                    setManual('publicKey', data.publicKey);
+                    setManual('signature', data.signature);
+                    var required = ['version', 'challenge', 'handle', 'timestamp', 'kernelVersion', 'platform', 'publicKey', 'signature'];
+                    var missing = required.filter(function (name) {
+                        return data[name] === undefined || data[name] === null || data[name] === '';
+                    });
+                    var lines = ['已识别 CLI JSON；提交后仍由服务端重新构造消息并验签。'];
+                    if (missing.length) {
+                        lines.push('缺少字段：' + missing.join('、'));
+                    }
+
+                    lines.push('挑战：' + (data.challenge || '—'));
+                    lines.push('时间戳：' + (data.timestamp
+                        ? new Date(Number(data.timestamp) * 1000).toLocaleString('zh-CN', { hour12: false })
+                        : '—'));
+                    lines.push('内核：' + (data.kernelVersion || '—'));
+                    lines.push('平台：' + (data.platform || '—'));
+                    preflight.textContent = lines.join('\n');
+
+                    if (!data.publicKey || !window.crypto || !crypto.subtle) {
+                        return;
+                    }
+
+                    try {
+                        var decoded = atob(String(data.publicKey).replace(/\s+/g, ''));
+                        var bytes = new Uint8Array(decoded.length);
+                        for (var index = 0; index < decoded.length; index++) {
+                            bytes[index] = decoded.charCodeAt(index);
+                        }
+
+                        crypto.subtle.digest('SHA-256', bytes).then(function (digest) {
+                            var hex = Array.prototype.map.call(
+                                new Uint8Array(digest),
+                                function (value) { return value.toString(16).padStart(2, '0'); }).join('');
+                            preflight.textContent = lines.concat(['公钥指纹：' + hex.slice(0, 16) + '…']).join('\n');
+                        }).catch(function () {
+                        });
+                    } catch (error) {
+                        preflight.textContent = lines.concat(['公钥指纹：无法解析 publicKey base64。']).join('\n');
+                    }
+                }
+
+                payload.addEventListener('input', function () {
+                    window.clearTimeout(timer);
+                    timer = window.setTimeout(update, 250);
+                });
+                update();
+            }
+
+            function initializeTableScrollers() {
+                document.querySelectorAll('.table-scroll').forEach(function (element) {
+                    element.classList.remove('is-scrollable');
+                    var scrollable = element.scrollWidth > element.clientWidth + 1;
+                    element.classList.toggle('is-scrollable', scrollable);
+                });
+            }
+
+            function initializeNavigationDrawer() {
+                if (document.documentElement.dataset.drawerInitialized === 'true') {
+                    return;
+                }
+
+                document.documentElement.dataset.drawerInitialized = 'true';
+                document.addEventListener('click', function (event) {
+                    var link = event.target.closest('.nav-disclosure .site-nav-mobile a');
+                    if (link) {
+                        link.closest('details')?.removeAttribute('open');
+                    }
+
+                    var userLink = event.target.closest('.user-disclosure .user-menu a');
+                    if (userLink) {
+                        userLink.closest('details')?.removeAttribute('open');
+                    }
+
+                    var adminLink = event.target.closest('.admin-mobile-nav .admin-nav a');
+                    if (adminLink) {
+                        adminLink.closest('details')?.removeAttribute('open');
+                    }
+
+                    document.querySelectorAll('details.nav-disclosure[open], details.user-disclosure[open], details.admin-mobile-nav[open]').forEach(function (details) {
+                        if (!details.contains(event.target)) {
+                            details.removeAttribute('open');
+                        }
+                    });
+                    document.body.classList.toggle('drawer-open', Boolean(document.querySelector('details.nav-disclosure[open]')));
+                });
+                document.addEventListener('keydown', function (event) {
+                    if (event.key !== 'Escape') {
+                        return;
+                    }
+
+                    var openDetails = document.querySelector('details.nav-disclosure[open], details.user-disclosure[open], details.admin-mobile-nav[open]');
+                    if (openDetails) {
+                        openDetails.removeAttribute('open');
+                        openDetails.querySelector('summary')?.focus();
+                        document.body.classList.remove('drawer-open');
+                    }
+                });
+            }
+
+            function initializeEnhancedNavigationFocus() {
+                if (!window.Blazor || typeof window.Blazor.addEventListener !== 'function'
+                    || window.whalepodFocusBound === true) {
+                    return;
+                }
+
+                window.whalepodFocusBound = true;
+                window.Blazor.addEventListener('enhancedload', function () {
+                    var main = document.getElementById('main-content');
+                    if (main) {
+                        main.focus({ preventScroll: true });
+                    }
+                });
+            }
+
+            function restoreSubmitButton(button) {
+                if (button.dataset.whalepodOriginalText !== undefined) {
+                    button.textContent = button.dataset.whalepodOriginalText;
+                    delete button.dataset.whalepodOriginalText;
+                }
+
+                button.disabled = false;
+                button.closest('form')?.removeAttribute('aria-busy');
+            }
+
+            function initializeSubmitFeedback() {
+                if (document.documentElement.dataset.submitFeedbackInitialized === 'true') {
+                    return;
+                }
+
+                document.documentElement.dataset.submitFeedbackInitialized = 'true';
+                document.addEventListener('submit', function (event) {
+                    if (event.defaultPrevented) {
+                        return;
+                    }
+
+                    var form = event.target;
+                    if (!(form instanceof HTMLFormElement)
+                        || (form.getAttribute('method') || '').toLowerCase() !== 'post') {
+                        return;
+                    }
+
+                    var button = event.submitter;
+                    if (!(button instanceof HTMLButtonElement) || button.name) {
+                        button = form.querySelector('button[type="submit"]:not([disabled])');
+                    }
+
+                    if (!(button instanceof HTMLButtonElement) || button.name || button.disabled) {
+                        return;
+                    }
+
+                    form.setAttribute('aria-busy', 'true');
+                    button.dataset.whalepodOriginalText = button.textContent;
+                    button.textContent = '提交中…';
+                    button.disabled = true;
+                    window.setTimeout(function () {
+                        restoreSubmitButton(button);
+                    }, 15000);
+                });
+
+                window.addEventListener('pageshow', function () {
+                    document.querySelectorAll('button[data-whalepod-original-text]').forEach(restoreSubmitButton);
+                    document.querySelectorAll('form[aria-busy="true"]').forEach(function (form) {
+                        form.removeAttribute('aria-busy');
+                    });
+                });
+            }
+
+            function initializePrintDetails() {
+                if (document.documentElement.dataset.printDetailsInitialized === 'true') {
+                    return;
+                }
+
+                document.documentElement.dataset.printDetailsInitialized = 'true';
+                window.addEventListener('beforeprint', function () {
+                    document.querySelectorAll('details.artifact:not([open])').forEach(function (details) {
+                        details.open = true;
+                        details.dataset.whalepodPrintOpened = 'true';
+                    });
+                });
+                window.addEventListener('afterprint', function () {
+                    document.querySelectorAll('details.artifact[data-whalepod-print-opened="true"]').forEach(function (details) {
+                        details.open = false;
+                        delete details.dataset.whalepodPrintOpened;
+                    });
+                });
+            }
+
+            function initializePublicRail() {
+                var rail = document.getElementById('popular-rail');
+                if (!rail || rail.dataset.railInitialized === 'true') {
+                    return;
+                }
+
+                rail.dataset.railInitialized = 'true';
+                var desktop = window.matchMedia('(min-width: 1280px)');
+                function syncRail() {
+                    if (desktop.matches) {
+                        rail.open = true;
+                    } else if (rail.dataset.userOpened !== 'true') {
+                        rail.open = false;
+                    }
+                }
+
+                rail.addEventListener('toggle', function () {
+                    if (desktop.matches) {
+                        return;
+                    }
+
+                    if (rail.open) {
+                        rail.dataset.userOpened = 'true';
+                    } else {
+                        delete rail.dataset.userOpened;
+                    }
+                });
+
+                if (desktop.addEventListener) {
+                    desktop.addEventListener('change', syncRail);
+                } else {
+                    desktop.addListener(syncRail);
+                }
+
+                syncRail();
+            }
+
+            function initializeDrawerFocus() {
+                var disclosure = document.querySelector('details.nav-disclosure');
+                if (!disclosure || disclosure.dataset.focusInitialized === 'true') {
+                    return;
+                }
+
+                disclosure.dataset.focusInitialized = 'true';
+                var summary = disclosure.querySelector('summary');
+                var drawer = disclosure.querySelector('.nav-drawer');
+                if (!summary || !drawer) {
+                    return;
+                }
+
+                disclosure.addEventListener('toggle', function () {
+                    if (disclosure.open) {
+                        document.body.classList.add('drawer-open');
+                        var first = drawer.querySelector('a[href], button:not([disabled])');
+                        if (first) {
+                            first.focus();
+                        }
+                        return;
+                    }
+
+                    document.body.classList.remove('drawer-open');
+                    if (document.activeElement && drawer.contains(document.activeElement)) {
+                        summary.focus();
+                    }
+                });
+
+                document.addEventListener('keydown', function (event) {
+                    if (!disclosure.open || event.key !== 'Tab') {
+                        return;
+                    }
+
+                    var nodes = Array.prototype.filter.call(
+                        drawer.querySelectorAll('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'),
+                        function (element) { return element.offsetParent !== null; });
+                    if (nodes.length === 0) {
+                        return;
+                    }
+
+                    var first = nodes[0];
+                    var last = nodes[nodes.length - 1];
+                    if (event.shiftKey && document.activeElement === first) {
+                        event.preventDefault();
+                        last.focus();
+                    } else if (!event.shiftKey && document.activeElement === last) {
+                        event.preventDefault();
+                        first.focus();
+                    }
+                });
+            }
+
+            function initializeTableResize() {
+                if (window.whalepodTableResizeBound === true) {
+                    return;
+                }
+
+                window.whalepodTableResizeBound = true;
+                var timer = null;
+                window.addEventListener('resize', function () {
+                    window.clearTimeout(timer);
+                    timer = window.setTimeout(initializeTableScrollers, 150);
+                });
+            }
+
+            function initializeAll() {
+                initializeThemeToggle();
+                initializeCopyButtons();
+                initializeNavigationProgress();
+                initializeEditor();
+                initializeDeviceForm();
+                initializeNavigationDrawer();
+                initializeDrawerFocus();
+                initializePublicRail();
+                initializeEnhancedNavigationFocus();
+                initializeSubmitFeedback();
+                initializePrintDetails();
+                initializeTableScrollers();
+                initializeTableResize();
+                clearEditorDraftOnSuccess();
+                hideProgress();
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', initializeAll);
+            } else {
+                initializeAll();
+            }
+
+            window.addEventListener('pageshow', initializeAll);
+            if (window.Blazor && typeof window.Blazor.addEventListener === 'function') {
+                window.Blazor.addEventListener('enhancedload', initializeAll);
+            }
+        })();
+    </script>
+</body>
+
+</html>

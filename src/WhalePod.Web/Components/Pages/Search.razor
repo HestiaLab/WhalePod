@@ -1,0 +1,211 @@
+@page "/search"
+@layout PublicLayout
+@using Microsoft.AspNetCore.RateLimiting
+@using WhalePod.Infrastructure.Services
+@attribute [EnableRateLimiting("public-search")]
+@inject PublicSearchService SearchService
+@inject IConfiguration Configuration
+
+<SeoHead Title="搜索 - WhalePod（鲸群）"
+         Description="搜索 WhalePod 的公开实测记录、成员与标签。"
+         NoIndex="true" />
+
+<header class="page-masthead page-masthead-compact">
+    <p class="eyebrow">SEARCH / 站内检索</p>
+    <h1>搜索</h1>
+    <p class="masthead-lead">搜索公开实测记录、成员与标签。</p>
+</header>
+
+<form class="search-form" method="get" action="/search" role="search">
+    <label for="search-q">关键词（最多 100 字）</label>
+    <input id="search-q" name="q" value="@Query" maxlength="100" required
+           type="search" autocomplete="off" placeholder="输入工具名、环境、现象或结论" />
+    <input type="hidden" name="type" value="@NormalizedType" />
+    <button type="submit">搜索</button>
+</form>
+
+@if (ErrorMessage is not null)
+{
+    <p class="alert alert-error" role="alert">@ErrorMessage</p>
+}
+
+@if (Result is not null && Query.Length > 0)
+{
+    <nav class="tabs" aria-label="搜索结果类型">
+        <a class="tab @(NormalizedType == "posts" ? "active" : null)"
+           href="@SearchUrl("posts")">帖子 @Result.Counts.Posts</a>
+        <a class="tab @(NormalizedType == "users" ? "active" : null)"
+           href="@SearchUrl("users")">成员 @Result.Counts.Users</a>
+        <a class="tab @(NormalizedType == "tags" ? "active" : null)"
+           href="@SearchUrl("tags")">标签 @Result.Counts.Tags</a>
+    </nav>
+
+    <p class="muted">关键词“@Query”共匹配 @TotalCount 项公开结果。</p>
+
+    @if (NormalizedType == "posts")
+    {
+        @if (Result.Posts.Count == 0)
+        {
+            <div class="empty-state">
+                <h2>没有匹配的公开帖子</h2>
+                <p>试试更短的关键词，或浏览全部标签。</p>
+                <p><a href="/tags">浏览标签</a></p>
+            </div>
+        }
+        else
+        {
+            <div class="post-list">
+                @foreach (var post in Result.Posts)
+                {
+                    <PostCard Post="post" />
+                }
+            </div>
+        }
+    }
+    else if (NormalizedType == "users")
+    {
+        @if (Result.Users.Count == 0)
+        {
+            <div class="empty-state"><h2>没有匹配的公开成员</h2><p>试试更短的关键词，或切换到帖子与标签。</p></div>
+        }
+        else
+        {
+            <ul class="result-list">
+                @foreach (var user in Result.Users)
+                {
+                    <li>
+                        <a href="/users/@user.Handle"><strong>@user.DisplayName</strong> @("@" + user.Handle)</a>
+                        <span class="muted">· 信任等级 Lv@user.TrustLevel</span>
+                        @if (user.Badge.Verified)
+                        {
+                            <a class="badge" href="/users/@user.Handle#device-badge">设备密钥已验证</a>
+                        }
+                    </li>
+                }
+            </ul>
+        }
+    }
+    else
+    {
+        @if (Result.Tags.Count == 0)
+        {
+            <div class="empty-state"><h2>没有匹配的公开标签</h2><p>试试更短的关键词，或浏览全部标签。</p></div>
+        }
+        else
+        {
+            <ul class="tag-list">
+                @foreach (var tag in Result.Tags)
+                {
+                    <li><a class="tag" href="/tags/@tag.Slug">@tag.Name · @tag.PostCount</a></li>
+                }
+            </ul>
+        }
+    }
+
+    @if (!string.IsNullOrWhiteSpace(Result.NextCursor))
+    {
+        <p>
+            <a class="button button-secondary"
+               href="@SearchUrl(NormalizedType, Result.NextCursor)">加载更多</a>
+        </p>
+    }
+}
+else if (Query.Length == 0)
+{
+    <div class="empty-state">
+        <h2>输入关键词开始搜索</h2>
+        <p>搜索公开帖子、成员或标签；只覆盖已通过审核且未删除的内容。</p>
+    </div>
+}
+
+<p><a href="/">返回信息流</a> · <a href="/tags">浏览标签</a></p>
+
+@code {
+    private static readonly string[] Types = ["posts", "users", "tags"];
+
+    [SupplyParameterFromQuery(Name = "q")]
+    public string? Q { get; set; }
+
+    [SupplyParameterFromQuery(Name = "type")]
+    public string? Type { get; set; }
+
+    [SupplyParameterFromQuery(Name = "cursor")]
+    public string? Cursor { get; set; }
+
+    private SearchResultView? Result { get; set; }
+    private string? ErrorMessage { get; set; }
+
+    private string Query => (Q ?? string.Empty).Trim();
+
+    private string NormalizedType => Types.Contains(Type, StringComparer.OrdinalIgnoreCase)
+        ? Type!.ToLowerInvariant()
+        : "posts";
+
+    private int TotalCount => Result is null
+        ? 0
+        : NormalizedType switch
+        {
+            "users" => Result.Counts.Users,
+            "tags" => Result.Counts.Tags,
+            _ => Result.Counts.Posts
+        };
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Query.Length == 0)
+        {
+            return;
+        }
+
+        if (Query.Length > 100)
+        {
+            ErrorMessage = "关键词不能超过 100 个字符。";
+            return;
+        }
+
+        if (Cursor?.Length > 512)
+        {
+            ErrorMessage = "分页游标过长。";
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(Type) && !Types.Contains(Type, StringComparer.OrdinalIgnoreCase))
+        {
+            ErrorMessage = "搜索类型无效，已显示帖子结果。";
+        }
+
+        var timeoutSeconds = Math.Clamp(Configuration.GetValue("PublicSearch:TimeoutSeconds", 3), 1, 30);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        try
+        {
+            Result = await SearchService.SearchAsync(
+                Query,
+                NormalizedType,
+                20,
+                Cursor,
+                timeout.Token);
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            ErrorMessage = $"搜索超时（>{timeoutSeconds} 秒）。请缩短关键词、增加限定词后重试。";
+            return;
+        }
+
+        if (Result.InvalidCursor)
+        {
+            ErrorMessage = "分页游标无效或与当前搜索不匹配。";
+            Result = null;
+        }
+    }
+
+    private string SearchUrl(string type, string? cursor = null)
+    {
+        var url = $"/search?q={Uri.EscapeDataString(Query)}&type={Uri.EscapeDataString(type)}";
+        if (!string.IsNullOrWhiteSpace(cursor))
+        {
+            url += $"&cursor={Uri.EscapeDataString(cursor)}";
+        }
+
+        return url;
+    }
+}

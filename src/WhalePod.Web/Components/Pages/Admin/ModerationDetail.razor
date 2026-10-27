@@ -1,0 +1,258 @@
+@page "/admin/moderation/{TargetType}/{TargetId:guid}"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@inject ContentModerationService Moderation
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>审核详情 - WhalePod</PageTitle>
+
+<h1>审核详情</h1>
+@if (Preview is not null)
+{
+    <p class="masthead-lead">
+        @if (Preview.TargetType == "post")
+        {
+            <text>帖子 · @Preview.Title</text>
+        }
+        else if (!string.IsNullOrWhiteSpace(Preview.PostTitle))
+        {
+            <text>评论 · 所属帖子：@Preview.PostTitle</text>
+        }
+        else
+        {
+            <text>评论</text>
+        }
+    </p>
+}
+
+
+@if (ErrorText is not null)
+{
+    <p role="alert">@ErrorText</p>
+}
+
+@if (Preview is null)
+{
+    <p role="alert">待审核内容不存在或已删除。</p>
+    <p><a href="/admin/moderation">返回审核队列</a></p>
+}
+else
+{
+    <p><a href="/admin/moderation">返回审核队列</a></p>
+
+    <dl>
+        <dt>类型</dt>
+        <dd>@(Preview.TargetType == "post" ? "帖子" : "评论")</dd>
+        <dt>标题</dt>
+        <dd>@Preview.Title</dd>
+        @if (Preview.PostId is not null)
+        {
+            <dt>所属帖子</dt>
+            <dd><a href="/posts/@Preview.PostId">@Preview.PostTitle</a></dd>
+        }
+        <dt>作者</dt>
+        <dd>@Preview.Author.DisplayName（@Preview.Author.Handle）</dd>
+        <dt>板块</dt>
+        <dd>@Preview.Category.Name</dd>
+        <dt>当前状态</dt>
+        <dd>@Preview.ModerationStatus</dd>
+        <dt>内容版本</dt>
+        <dd>@Preview.ContentVersion</dd>
+        <dt>待处理举报</dt>
+        <dd>@Preview.ReportCount</dd>
+        <dt>提交时间</dt>
+        <dd>@DisplayFormat.Time(Preview.SubmittedAt)</dd>
+    </dl>
+
+    @if (Preview.RiskHints.Count > 0)
+    {
+        <section aria-labelledby="risk-heading">
+            <h2 id="risk-heading">风险提示</h2>
+            <ul>
+                @foreach (var hint in Preview.RiskHints)
+                {
+                    <li>@hint</li>
+                }
+            </ul>
+        </section>
+    }
+
+    <section aria-labelledby="ai-heading">
+        <h2 id="ai-heading">AI 建议</h2>
+        @if (Preview.AiSuggestion is null)
+        {
+            <p class="muted">当前版本没有 AI 建议，需全人工判断。</p>
+        }
+        else
+        {
+            <dl>
+                <dt>建议</dt>
+                <dd>@SuggestionLabel(Preview.AiSuggestion.Suggestion)</dd>
+                <dt>置信度</dt>
+                <dd>@((Preview.AiSuggestion.Confidence * 100).ToString("0.0"))%</dd>
+                <dt>策略码</dt>
+                <dd>@Preview.AiSuggestion.PolicyCode</dd>
+                <dt>理由</dt>
+                <dd>@Preview.AiSuggestion.Reason</dd>
+                <dt>模型</dt>
+                <dd>@Preview.AiSuggestion.ModelName @Preview.AiSuggestion.ModelVersion（@Preview.AiSuggestion.ModelQuantization）</dd>
+            </dl>
+        }
+    </section>
+
+    <section aria-labelledby="content-heading">
+        <h2 id="content-heading">正文预览</h2>
+        <article class="admin-content-preview">
+            @((MarkupString)Preview.BodyHtml)
+        </article>
+    </section>
+
+    @if (Preview.Images.Count > 0)
+    {
+        <section aria-labelledby="images-heading">
+            <h2 id="images-heading">图片</h2>
+            <ul>
+                @foreach (var image in Preview.Images)
+                {
+                    <li><a href="@image.Url">@image.Url</a>（@image.Width×@image.Height）</li>
+                }
+            </ul>
+        </section>
+    }
+
+    @if (Preview.Artifacts.Count > 0)
+    {
+        <section aria-labelledby="artifacts-heading">
+            <h2 id="artifacts-heading">产物（纯文本）</h2>
+            @foreach (var artifact in Preview.Artifacts)
+            {
+                <h3>@artifact.Name <span class="muted">@artifact.Kind</span></h3>
+                @if (!string.IsNullOrWhiteSpace(artifact.Note))
+                {
+                    <p class="muted">@artifact.Note</p>
+                }
+                <pre>@artifact.Content</pre>
+            }
+        </section>
+    }
+
+    <section aria-labelledby="action-heading">
+        <h2 id="action-heading">人工裁决</h2>
+        <form method="post" action="/admin/moderation/@Preview.TargetType/@Preview.TargetId/action"
+              onsubmit="return confirm('确认提交该审核动作？');">
+            <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+            <input type="hidden" name="expectedContentVersion" value="@Preview.ContentVersion" />
+            @if (Preview.AiSuggestion is not null)
+            {
+                <input type="hidden" name="suggestionId" value="@Preview.AiSuggestion.Id" />
+            }
+            <p>
+                <label for="moderation-action">动作</label>
+                <select id="moderation-action" name="action" required>
+                    @foreach (var action in AvailableActions())
+                    {
+                        <option value="@action.Value">@action.Label</option>
+                    }
+                </select>
+            </p>
+            <p>
+                <label for="moderation-reason">原因（驳回、隐藏、删除、升级必填）</label>
+                <textarea id="moderation-reason" name="reason" rows="3" maxlength="500"></textarea>
+            </p>
+            @if (Preview.AiSuggestion is not null)
+            {
+                <p>
+                    <label for="moderation-override">覆盖 AI 建议理由（与建议不一致时必填）</label>
+                    <textarea id="moderation-override" name="overrideReason" rows="2" maxlength="1000"></textarea>
+                </p>
+            }
+            <button type="submit">提交裁决</button>
+        </form>
+        <p class="muted">AI 只提供建议；本操作才会改变内容状态，并写入审核记录、通知与审计。</p>
+    </section>
+}
+
+@code {
+    [Parameter]
+    public string TargetType { get; set; } = string.Empty;
+
+    [Parameter]
+    public Guid TargetId { get; set; }
+
+    [SupplyParameterFromQuery]
+    public string? Error { get; set; }
+
+    private ModerationPreviewView? Preview { get; set; }
+    private string Token { get; set; } = string.Empty;
+
+    private string? ErrorText => Error switch
+    {
+        "stale" => "内容版本已变化或任务已被处理，请返回队列刷新。",
+        "override" => "与 AI 建议不一致时必须填写覆盖理由。",
+        "validation" => "审核参数无效：驳回、隐藏、删除或升级必须填写原因。",
+        "missing" => "内容不存在或已删除。",
+        "forbidden" => "当前账号无权执行该审核操作。",
+        _ => null
+    };
+
+    private static string SuggestionLabel(string suggestion) => suggestion switch
+    {
+        "approve" => "通过",
+        "reject" => "驳回",
+        "escalate" => "升级人工",
+        _ => suggestion
+    };
+
+    private IEnumerable<(string Value, string Label)> AvailableActions()
+    {
+        if (Preview is null)
+        {
+            yield break;
+        }
+
+        if (Preview.ModerationStatus == "pending")
+        {
+            yield return ("approve", "通过");
+            yield return ("reject", "驳回");
+            yield return ("escalate", "升级人工");
+        }
+        else if (Preview.ModerationStatus == "approved")
+        {
+            yield return ("hide", "隐藏");
+        }
+        else if (Preview.ModerationStatus == "hidden")
+        {
+            yield return ("restore", "恢复公开");
+        }
+
+        yield return ("delete", "删除");
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var httpContext = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+        Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+
+        if (!Guid.TryParse(httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier), out var actorId))
+        {
+            StatusCodeResponse.Defer(httpContext, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        Preview = await Moderation.GetPreviewAsync(
+            actorId,
+            TargetType,
+            TargetId,
+            httpContext.RequestAborted);
+        if (Preview is null)
+        {
+            StatusCodeResponse.NotFound(httpContext);
+        }
+    }
+}

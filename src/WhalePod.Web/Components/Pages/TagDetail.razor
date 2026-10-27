@@ -1,0 +1,104 @@
+@page "/tags/{TagSlug}"
+@layout PublicLayout
+@using WhalePod.Infrastructure.Services
+@inject PublicContentService PublicContent
+@inject IHttpContextAccessor HttpContextAccessor
+
+@if (Detail is null)
+{
+    <SeoHead Title="标签不存在 - WhalePod" Description="该标签不存在或当前不可见。" NoIndex="true" />
+    <div class="empty-state">
+        <h1>标签不存在</h1>
+        <p>该标签不存在、已隐藏，或没有公开帖子。</p>
+        <p><a href="/tags">浏览全部标签</a></p>
+    </div>
+}
+else
+{
+    <SeoHead Title="@SeoTitle"
+             Description="@SeoDescription"
+             CanonicalPath="@CanonicalPath" />
+
+    <nav class="breadcrumb" aria-label="面包屑">
+        <a href="/">首页</a>
+        <span aria-hidden="true">/</span>
+        <a href="/tags">全部标签</a>
+    </nav>
+    <header class="page-masthead page-masthead-compact">
+        <p class="eyebrow">TOPIC / 标签</p>
+        <h1>@Detail.Tag.Name</h1>
+        <p class="masthead-lead">公开帖子 @Detail.Tag.PostCount · @Detail.Note</p>
+    </header>
+
+    @if (Detail.Posts.InvalidCursor)
+    {
+        <p class="alert alert-error" role="alert">分页游标无效，请返回第一页。</p>
+        <p><a class="button button-secondary" href="/tags/@Detail.Tag.Slug">第一页</a></p>
+    }
+    else if (Detail.Posts.Items.Count == 0)
+    {
+        <div class="empty-state">
+            <h2>该标签下暂无公开帖子</h2>
+            <p>可以浏览全部标签，或换一个标签继续查找。</p>
+            <p><a href="/tags">浏览全部标签</a></p>
+        </div>
+    }
+    else
+    {
+        <div class="post-list">
+            @foreach (var post in Detail.Posts.Items)
+            {
+                <PostCard Post="post" />
+            }
+        </div>
+
+        <nav class="pagination" aria-label="分页">
+            @if (!string.IsNullOrWhiteSpace(Detail.Posts.NextCursor))
+            {
+                <a class="button button-secondary"
+                   href="/tags/@Detail.Tag.Slug?cursor=@Uri.EscapeDataString(Detail.Posts.NextCursor)">加载更多</a>
+            }
+            else
+            {
+                <span class="muted">已经到底了。</span>
+            }
+            <a href="/rss.xml">订阅 RSS</a>
+        </nav>
+    }
+}
+
+@code {
+    [Parameter]
+    public string TagSlug { get; set; } = string.Empty;
+
+    [SupplyParameterFromQuery(Name = "cursor")]
+    public string? Cursor { get; set; }
+
+    private TagDetailView? Detail { get; set; }
+
+    private string SeoTitle => Detail is null ? "标签不存在 - WhalePod" : $"{Detail.Tag.Name} 标签 - WhalePod";
+
+    private string SeoDescription => Detail is null
+        ? "该标签不存在或当前不可见。"
+        : $"浏览 WhalePod 中与 {Detail.Tag.Name} 相关的公开实测记录。";
+
+    private string CanonicalPath => Detail is null ? "/tags" : $"/tags/{Detail.Tag.Slug}";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var http = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+        if (Cursor?.Length > 512)
+        {
+            Detail = null;
+            StatusCodeResponse.Defer(http, StatusCodes.Status400BadRequest);
+            return;
+        }
+
+        Detail = await PublicContent.GetTagDetailAsync(TagSlug, 20, Cursor);
+        if (Detail is null)
+        {
+            StatusCodeResponse.NotFound(http);
+        }
+    }
+}

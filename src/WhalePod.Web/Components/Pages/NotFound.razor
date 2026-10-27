@@ -1,0 +1,28 @@
+@page "/{*Path:nonfile}"
+@layout MainLayout
+@inject IHttpContextAccessor HttpContextAccessor
+
+<SeoHead Title="内容不存在 - WhalePod" Description="请求的页面不存在或当前不可见。" NoIndex="true" />
+
+<div class="status-page">
+    <p class="status-code">HTTP 404</p>
+    <h1>内容不存在</h1>
+    <p>你访问的页面不存在、已删除，或尚未公开。</p>
+    <div class="status-actions">
+        <a class="button" href="/">返回信息流</a>
+        <a class="button button-secondary" href="/search">搜索内容</a>
+    </div>
+</div>
+
+@code {
+    [Parameter]
+    public string? Path { get; set; }
+
+    [CascadingParameter]
+    public HttpContext? CascadingHttpContext { get; set; }
+
+    protected override void OnInitialized()
+    {
+        StatusCodeResponse.NotFound(CascadingHttpContext ?? HttpContextAccessor.HttpContext);
+    }
+}

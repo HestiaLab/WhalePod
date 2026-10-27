@@ -1,0 +1,9 @@
+@if (!string.IsNullOrWhiteSpace(Json))
+{
+    <script type="application/ld+json">@((MarkupString)Json)</script>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public string Json { get; set; } = string.Empty;
+}

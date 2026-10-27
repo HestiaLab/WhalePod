@@ -1,0 +1,77 @@
+@page "/admin/audit/{AuditLogId:guid}"
+@layout AdminLayout
+@attribute [Authorize(Policy = "AdminOnly")]
+@using WhalePod.Infrastructure.Services
+@inject AuditAdminService AuditAdmin
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>审计详情 - WhalePod</PageTitle>
+
+<h1>审计详情</h1>
+<p class="masthead-lead">审计记录只读；操作者与目标均已脱敏。</p>
+
+
+@if (Detail is null)
+{
+    <p role="alert">审计记录不存在。</p>
+}
+else
+{
+    <dl>
+        <dt>时间（北京时间）</dt>
+        <dd>@DisplayFormat.Time(Detail.Item.CreatedAt)</dd>
+        <dt>时间（UTC）</dt>
+        <dd>@Detail.Item.CreatedAt.UtcDateTime.ToString("O")</dd>
+        <dt>操作者</dt>
+        <dd>@ActorText(Detail.Item)</dd>
+        <dt>动作</dt>
+        <dd><code>@Detail.Item.Action</code></dd>
+        <dt>目标</dt>
+        <dd>@TargetText(Detail.Item)</dd>
+        <dt>请求 ID</dt>
+        <dd>@(Detail.Item.RequestId ?? "—")</dd>
+    </dl>
+
+    <h2>脱敏后的元数据</h2>
+    <pre>@Detail.MetadataJson</pre>
+}
+
+<p><a href="/admin/audit">返回审计日志</a></p>
+
+@code {
+    [Parameter]
+    public Guid AuditLogId { get; set; }
+
+    private AuditDetailResult? Detail { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Detail = await AuditAdmin.GetDetailAsync(AuditLogId);
+        if (Detail is null)
+        {
+            var httpContext = HttpContextAccessor.HttpContext
+                ?? throw new InvalidOperationException("HttpContext is unavailable.");
+            StatusCodeResponse.NotFound(httpContext);
+        }
+    }
+
+    private static string ActorText(AuditListItem item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.ActorHandle))
+        {
+            return item.ActorHandle;
+        }
+
+        return item.ActorId is null ? item.ActorType : $"{item.ActorType}:{item.ActorId}";
+    }
+
+    private static string TargetText(AuditListItem item)
+    {
+        if (string.IsNullOrWhiteSpace(item.TargetType))
+        {
+            return "—";
+        }
+
+        return item.TargetId is null ? item.TargetType : $"{item.TargetType}:{item.TargetId}";
+    }
+}

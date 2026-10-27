@@ -1,0 +1,172 @@
+@inherits LayoutComponentBase
+
+<a class="skip-link" href="#main-content" data-enhance-nav="false">跳到正文</a>
+
+<header class="site-header">
+    <div class="site-header-inner">
+        <a class="brand" href="/" aria-label="WhalePod 首页">
+            <span class="brand-mark"><WhaleMark /></span>
+            <span class="brand-lockup">
+                <span class="brand-word">WhalePod</span>
+                <span class="brand-cn">鲸群</span>
+            </span>
+        </a>
+
+        <nav class="site-nav-primary" aria-label="主导航">
+            <NavLink class="nav-link" href="/" Match="NavLinkMatch.All">首页</NavLink>
+            <NavLink class="nav-link" href="/tags">标签</NavLink>
+            <NavLink class="nav-link" href="/search">搜索</NavLink>
+        </nav>
+
+        <div class="site-header-actions">
+            <a class="search-link" href="/search" aria-label="搜索">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4.2-4.2"></path></svg>
+                <span>搜索</span>
+            </a>
+
+            <AuthorizeView>
+                <Authorized Context="auth">
+                    <a class="button header-cta" href="/editor">写一篇实测</a>
+                    <details class="user-disclosure">
+                        <summary class="user-chip" aria-label="@($"账号菜单：{auth.User.Identity?.Name}")">
+                            <span class="avatar-initial" aria-hidden="true">@Initial(auth.User.Identity?.Name)</span>
+                            <span class="user-chip-name">@auth.User.Identity?.Name</span>
+                            <span class="user-chip-caret" aria-hidden="true"></span>
+                        </summary>
+                        <div class="user-menu">
+                            <div class="user-menu-head">
+                                <span class="avatar-initial avatar-initial-lg" aria-hidden="true">@Initial(auth.User.Identity?.Name)</span>
+                                <div>
+                                    <p class="user-menu-label">已登录</p>
+                                    <strong>@auth.User.Identity?.Name</strong>
+                                </div>
+                            </div>
+                            <nav aria-label="账号导航">
+                                <NavLink class="user-menu-link" href="@($"/users/{auth.User.Identity?.Name}")">个人主页</NavLink>
+                                <NavLink class="user-menu-link" href="/settings/profile">设置</NavLink>
+                                <NavLink class="user-menu-link" href="/appeals">申诉</NavLink>
+                                <AuthorizeView Roles="admin">
+                                    <Authorized>
+                                        <NavLink class="user-menu-link" href="/admin">管理后台</NavLink>
+                                    </Authorized>
+                                </AuthorizeView>
+                            </nav>
+                        </div>
+                    </details>
+                </Authorized>
+                <NotAuthorized>
+                    <a class="button header-cta header-login-cta" href="/login">登录 / 激活</a>
+                </NotAuthorized>
+            </AuthorizeView>
+
+            <button id="theme-toggle" type="button" class="theme-toggle"
+                    aria-label="切换主题，当前：自动">
+                <svg class="theme-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                    <circle cx="12" cy="12" r="4"></circle>
+                    <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+                </svg>
+                <span class="theme-label">自动</span>
+            </button>
+
+            <details class="nav-disclosure">
+                <summary class="nav-toggle" aria-label="打开导航">
+                    <span class="nav-toggle-lines" aria-hidden="true"><span></span><span></span></span>
+                    <span class="nav-toggle-text">菜单</span>
+                </summary>
+                <div class="nav-drawer">
+                    <div class="nav-drawer-head">
+                        <p class="nav-drawer-title">浏览与账号</p>
+                    </div>
+                    <nav class="site-nav-mobile" aria-label="移动导航">
+                        <p class="nav-group-label">浏览</p>
+                        <NavLink class="nav-link" href="/" Match="NavLinkMatch.All">首页</NavLink>
+                        <NavLink class="nav-link" href="/tags">标签</NavLink>
+                        <NavLink class="nav-link" href="/search">搜索</NavLink>
+                        <AuthorizeView>
+                            <Authorized Context="auth">
+                                <p class="nav-group-label">参与</p>
+                                <NavLink class="nav-link" href="/editor">写一篇实测</NavLink>
+                                <NavLink class="nav-link" href="/appeals">申诉</NavLink>
+                                <p class="nav-group-label">账号</p>
+                                <NavLink class="nav-link" href="@($"/users/{auth.User.Identity?.Name}")">@auth.User.Identity?.Name 的主页</NavLink>
+                                <NavLink class="nav-link" href="/settings/profile">设置</NavLink>
+                                <AuthorizeView Roles="admin">
+                                    <Authorized>
+                                        <NavLink class="nav-link" href="/admin">管理后台</NavLink>
+                                    </Authorized>
+                                </AuthorizeView>
+                            </Authorized>
+                            <NotAuthorized>
+                                <p class="nav-group-label">账号</p>
+                                <a class="nav-link" href="/login">登录 / 激活</a>
+                            </NotAuthorized>
+                        </AuthorizeView>
+                        <div class="nav-drawer-foot">
+                            <a href="/rss.xml">RSS</a>
+                            <a href="/sitemap.xml">Sitemap</a>
+                        </div>
+                    </nav>
+                </div>
+            </details>
+        </div>
+    </div>
+</header>
+
+<main id="main-content" class="site-main" tabindex="-1">
+    @Body
+</main>
+
+<footer class="site-footer">
+    <div class="site-footer-inner">
+        <div class="footer-identity">
+            <a class="footer-brand" href="/" aria-label="WhalePod 首页">
+                <span class="footer-mark"><WhaleMark /></span>
+                <span>WhalePod <em>鲸群</em></span>
+            </a>
+            <p>只收录可复现的 AI 工具实测记录与可直接复制的产物。</p>
+            <p class="footer-fineprint">邀请制 · 人工审核 · 设备密钥可验证</p>
+        </div>
+        <nav class="footer-nav" aria-label="页脚导航">
+            <div>
+                <p class="footer-label">浏览</p>
+                <a href="/">信息流</a>
+                <a href="/tags">标签</a>
+                <a href="/search">搜索</a>
+            </div>
+            <div>
+                <p class="footer-label">订阅</p>
+                <a href="/rss.xml">RSS</a>
+                <a href="/sitemap.xml">Sitemap</a>
+            </div>
+            <div>
+                <p class="footer-label">参与</p>
+                <a href="/editor">写一篇实测</a>
+                <a href="/appeals">申诉</a>
+                <AuthorizeView>
+                    <Authorized>
+                        <a href="/settings/profile">设置</a>
+                    </Authorized>
+                    <NotAuthorized>
+                        <a href="/login">登录 / 激活</a>
+                    </NotAuthorized>
+                </AuthorizeView>
+            </div>
+        </nav>
+    </div>
+    <div class="site-footer-bottom">
+        <span>WhalePod（鲸群）</span>
+        <span>可复现，才值得被记录。</span>
+    </div>
+</footer>
+
+@code {
+    private static string Initial(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "?";
+        }
+
+        return char.ToUpperInvariant(value.Trim()[0]).ToString();
+    }
+}
