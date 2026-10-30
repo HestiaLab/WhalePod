@@ -53,4 +53,5 @@
 - 迭代 3：`Program.cs` 1,298 → 785 行；评论创建并入 `InteractionEndpoints`，编辑器 create/preview 并入 `EditorEndpoints`，健康/会话/计数器抽到 `Endpoints/HostEndpoints.cs`，`StatusPageHtml` 移入 `WebEndpointHelpers`。
 - 迭代 4：`AgentModerationService` 1,723 → 603 行；新增 `AgentTaskSynchronizer` 与 `AgentContentProjector` 两个独立类；公开用例拆到 `AgentModerationService.Lifecycle.cs`（299 行）与 `AgentModerationService.Suggestions.cs`（340 行），所有 Agent 服务文件 <700 行。
 - 迭代 5：新增 `WhalePodSharedServiceCollectionExtensions`，Web/API 共享 DbContext/媒体/邮件与 22 个公共服务注册（Web Program 761 行、API 1,092 行）；Agent 进一步抽离 `AgentTaskLeaseService`（157 行）与 `AgentBudgetGate`（67 行），`AgentModerationService` 517 行、生命周期 242 行、建议 330 行。
-- 验收状态：`Program.cs` <800、Agent 服务文件 <700 均已达成；可选后续（建议服务独立类、API Program 拆分）不影响当前验收。
+- 迭代 6：API `Program.cs` 1,092 → 712 行；公开内容/发现端点（categories/tags/feed/posts/comments/users/search）抽到 `Api/Endpoints/PublicEndpoints.cs`，健康端点保留宿主。
+- 验收状态：Web 757、API 712、Agent 最大 517；`Program.cs` <800 与 Agent 服务文件 <700 均已达成。可选后续仅剩建议服务独立类。
