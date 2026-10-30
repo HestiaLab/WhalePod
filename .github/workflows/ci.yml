@@ -19,6 +19,8 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: "true"
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
   WHALEPOD_TEST_DB_CONNECTION: "Host=127.0.0.1;Port=5432;Database=whalepod_test;Username=postgres;Password=postgres"
+  # GitHub Actions service containers expose the database through Docker NAT.
+  WHALEPOD_TEST_ALLOW_NON_LOOPBACK: "true"
 
 jobs:
   build-test:

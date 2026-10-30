@@ -154,10 +154,21 @@ internal static partial class TestDatabaseGuard
 
         if (string.IsNullOrEmpty(serverAddress) || !IsLoopbackAddress(serverAddress))
         {
-            throw new InvalidOperationException(
-                $"Database connection is not a loopback TCP connection (server address '{serverAddress}').");
+            // GitHub Actions service containers connect through Docker NAT, so the server
+            // reports the bridge address while the client still targets loopback.
+            if (!AllowNonLoopbackServer)
+            {
+                throw new InvalidOperationException(
+                    $"Database connection is not a loopback TCP connection (server address '{serverAddress}').");
+            }
         }
     }
+
+    private static bool AllowNonLoopbackServer =>
+        string.Equals(
+            Environment.GetEnvironmentVariable("WHALEPOD_TEST_ALLOW_NON_LOOPBACK"),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
 
     private static bool IsLoopbackHost(string host)
     {
