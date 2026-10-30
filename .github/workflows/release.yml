@@ -45,6 +45,13 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4.4.0
 
+      - name: 初始化测试数据库扩展
+        shell: bash
+        run: |
+          container=$(docker ps --format '{{.ID}} {{.Image}}' | awk '$2 ~ /postgres/ {print $1; exit}')
+          test -n "$container"
+          docker exec "$container" psql -U postgres -d whalepod_test -c "CREATE EXTENSION IF NOT EXISTS citext;"
+
       - name: 安装 .NET SDK
         uses: actions/setup-dotnet@v4.3.1
         with:
