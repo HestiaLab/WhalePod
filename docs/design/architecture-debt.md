@@ -44,3 +44,14 @@
 
 - 新增 `tests/browser/`：无 npm 依赖的 CDP smoke（截图、控制台错误、可选 axe-core 扫描），详见该目录 README。
 - 历史 axe 结论的原始报告未留存，acceptance 已标注；后续每次 UI 变更以 `tests/browser/` 脚本产出报告并归档。
+
+## 5. 进度（2026-10-30 迭代 1）
+
+- 端点模块化：`Program.cs` 2,783 → 2,096 行；已抽出 `Endpoints/DiscoveryEndpoints.cs`（RSS/Sitemap/robots）与 `Endpoints/AccountEndpoints.cs`（资料/邮件偏好/注销/设备/申诉/退订），共享 `WebEndpointHelpers`。
+- P3-10 测量完成：50k 帖子/200 板块/2,000 标签下首页 p95 36 ms；按阈值增加侧栏 30 项上限与 `/categories` 页，详见 performance.md 第 6 节。
+- 迭代 2：`Program.cs` 2,096 → 1,299 行；新增 `Endpoints/AdminConfigEndpoints.cs`（标签/邀请码/审计导出/服务账号/AI/敏感词，约 820 行），`Csv`/凭据 reveal helper 一并迁出。
+- 迭代 3：`Program.cs` 1,298 → 785 行；评论创建并入 `InteractionEndpoints`，编辑器 create/preview 并入 `EditorEndpoints`，健康/会话/计数器抽到 `Endpoints/HostEndpoints.cs`，`StatusPageHtml` 移入 `WebEndpointHelpers`。
+- 迭代 4：`AgentModerationService` 1,723 → 603 行；新增 `AgentTaskSynchronizer` 与 `AgentContentProjector` 两个独立类；公开用例拆到 `AgentModerationService.Lifecycle.cs`（299 行）与 `AgentModerationService.Suggestions.cs`（340 行），所有 Agent 服务文件 <700 行。
+- 迭代 5：新增 `WhalePodSharedServiceCollectionExtensions`，Web/API 共享 DbContext/媒体/邮件与 22 个公共服务注册（Web Program 761 行、API 1,092 行）；Agent 进一步抽离 `AgentTaskLeaseService`（157 行）与 `AgentBudgetGate`（67 行），`AgentModerationService` 517 行、生命周期 242 行、建议 330 行。
+- 迭代 6：API `Program.cs` 1,092 → 712 行；公开内容/发现端点（categories/tags/feed/posts/comments/users/search）抽到 `Api/Endpoints/PublicEndpoints.cs`，健康端点保留宿主。
+- 验收状态：Web 757、API 712、Agent 最大 517；`Program.cs` <800 与 Agent 服务文件 <700 均已达成。可选后续仅剩建议服务独立类。
