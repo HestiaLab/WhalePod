@@ -94,6 +94,12 @@ else
                     <label for="user-status-expires">禁言到期（UTC，禁言必填）</label>
                     <input id="user-status-expires" name="expiresAt" type="datetime-local" />
                 </p>
+                <p>
+                    <label>
+                        <input type="checkbox" name="confirm" value="yes" required />
+                        我确认变更该用户账号状态
+                    </label>
+                </p>
                 <button type="submit">保存状态</button>
             </form>
             <p class="muted">不能修改自己的账号状态；最后一名有效管理员不能被禁言或封禁。</p>
@@ -155,6 +161,7 @@ else
         "self" => "不能修改自己的状态或降级自己的信任等级。",
         "last-admin" => "不能移除或处罚最后一名有效管理员。",
         "forbidden" => "当前账号无权执行该操作。",
+        "confirm" => "请先勾选确认再变更账号状态。",
         _ => null
     };
 

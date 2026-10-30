@@ -261,6 +261,27 @@
                     var tags = Array.prototype.map.call(
                         form.querySelectorAll('input[name="tags"]:checked'),
                         function (element) { return element.value; });
+                    var artifacts = Array.prototype.map.call(
+                        form.querySelectorAll('[data-artifact-row]'),
+                        function (row) {
+                            function rowValue(name) {
+                                var input = row.querySelector('[name="' + name + '"]');
+                                return input ? input.value : '';
+                            }
+
+                            return {
+                                kind: rowValue('artifactKind'),
+                                name: rowValue('artifactName'),
+                                note: rowValue('artifactNote'),
+                                content: rowValue('artifactContent')
+                            };
+                        });
+                    var imageIds = Array.prototype.map.call(
+                        form.querySelectorAll('input[name="imageIds"]'),
+                        function (element) { return element.value; });
+                    var imageAlts = Array.prototype.map.call(
+                        form.querySelectorAll('input[name="imageAlt"]'),
+                        function (element) { return element.value; });
                     return {
                         title: field('title'),
                         categoryId: field('categoryId'),
@@ -269,19 +290,22 @@
                         platform: field('platform'),
                         model: field('model'),
                         tags: tags,
-                        artifactKind: field('artifactKind'),
-                        artifactName: field('artifactName'),
-                        artifactNote: field('artifactNote'),
-                        artifactContent: field('artifactContent'),
-                        imageIds: field('imageIds'),
+                        artifacts: artifacts,
+                        imageIds: imageIds,
+                        imageAlts: imageAlts,
                         savedAt: new Date().toISOString()
                     };
                 }
 
                 function hasContent(draft) {
+                    var artifactContent = Array.isArray(draft.artifacts) && draft.artifacts.some(
+                        function (artifact) {
+                            return artifact && (artifact.name || artifact.note || artifact.content);
+                        });
                     return Boolean(draft.title || draft.bodyMd || draft.kernel || draft.platform
-                        || draft.model || draft.artifactName || draft.artifactContent
-                        || draft.imageIds || (draft.tags && draft.tags.length));
+                        || draft.model || artifactContent
+                        || (draft.imageIds && draft.imageIds.length)
+                        || (draft.tags && draft.tags.length));
                 }
 
                 function saveDraft() {
@@ -316,11 +340,31 @@
                     setValue('kernel', draft.kernel);
                     setValue('platform', draft.platform);
                     setValue('model', draft.model);
-                    setValue('artifactKind', draft.artifactKind);
-                    setValue('artifactName', draft.artifactName);
-                    setValue('artifactNote', draft.artifactNote);
-                    setValue('artifactContent', draft.artifactContent);
-                    setValue('imageIds', draft.imageIds);
+                    var artifacts = Array.isArray(draft.artifacts) ? draft.artifacts : [];
+                    Array.prototype.forEach.call(
+                        form.querySelectorAll('[data-artifact-row]'),
+                        function (row, index) {
+                            var artifact = artifacts[index] || {};
+                            function setRowValue(name, value) {
+                                var input = row.querySelector('[name="' + name + '"]');
+                                if (input) {
+                                    input.value = typeof value === 'string' ? value : '';
+                                }
+                            }
+
+                            setRowValue('artifactKind', artifact.kind);
+                            setRowValue('artifactName', artifact.name);
+                            setRowValue('artifactNote', artifact.note);
+                            setRowValue('artifactContent', artifact.content);
+                        });
+                    var alts = Array.isArray(draft.imageAlts) ? draft.imageAlts : [];
+                    Array.prototype.forEach.call(
+                        form.querySelectorAll('input[name="imageAlt"]'),
+                        function (input, index) {
+                            if (typeof alts[index] === 'string') {
+                                input.value = alts[index];
+                            }
+                        });
                     var selected = Array.isArray(draft.tags) ? draft.tags : [];
                     Array.prototype.forEach.call(
                         form.querySelectorAll('input[name="tags"]'),

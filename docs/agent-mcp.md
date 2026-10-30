@@ -47,8 +47,12 @@ AI 只提交结构化建议，不改变内容审核状态；所有内容必须�
 
 Agent 进程只发起出站 HTTPS；MCP 仅 stdio，不监听 HTTP/WebSocket。令牌放在本机环境变量或操作系统秘密存储中，不写入仓库、不打印、不返回给 MCP 客户端。
 
+默认 API 地址为 `https://localhost:5010`。本机开发如需回环 HTTP，必须显式设置 `WHALEPOD_AGENT_ALLOW_INSECURE_HTTP=true`；非回环 HTTP 一律拒绝。
+
 ```bash
 export WHALEPOD_AGENT_API_URL="https://whalepod.example.com"
+# 本机开发：export WHALEPOD_AGENT_API_URL="http://localhost:5010"
+# 本机开发：export WHALEPOD_AGENT_ALLOW_INSECURE_HTTP="true"
 export WHALEPOD_AGENT_TOKEN="<service-token>"
 export WHALEPOD_AGENT_MODEL_NAME="deepseek-flash"
 export WHALEPOD_AGENT_MODEL_VERSION="<approved-version>"

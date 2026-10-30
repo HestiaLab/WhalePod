@@ -155,6 +155,63 @@ public sealed class McpToolTests
         Assert.Contains(taskId.ToString(), client.ReleasedTaskIds);
     }
 
+    [Fact]
+    public async Task Tool_timeout_does_not_end_the_session()
+    {
+        var client = new FakeAgentApiClient { SlowPolicy = true };
+        var input = new StringReader(string.Join('\n',
+            """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"moderation_get_policy","arguments":{}}}""",
+            """{"jsonrpc":"2.0","id":2,"method":"ping"}"""));
+        var output = new StringWriter();
+        var server = new McpStdioServer(
+            client,
+            input,
+            output,
+            new StringWriter(),
+            TimeSpan.FromMilliseconds(200));
+        await server.RunAsync();
+
+        var responses = ParseResponses(output.ToString());
+        Assert.Equal([1, 2], responses.Keys.OrderBy(id => id).ToList());
+        Assert.True(responses[1]!["result"]!["isError"]!.GetValue<bool>());
+        Assert.NotNull(responses[2]!["result"]);
+    }
+
+    [Fact]
+    public async Task Cancellation_notification_cancels_the_in_flight_call()
+    {
+        var client = new FakeAgentApiClient { SlowPolicy = true };
+        var input = new StringReader(string.Join('\n',
+            """{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"moderation_get_policy","arguments":{}}}""",
+            """{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}""",
+            """{"jsonrpc":"2.0","id":8,"method":"ping"}"""));
+        var output = new StringWriter();
+        var server = new McpStdioServer(
+            client,
+            input,
+            output,
+            new StringWriter(),
+            TimeSpan.FromSeconds(30));
+        await server.RunAsync();
+
+        var responses = ParseResponses(output.ToString());
+        Assert.Equal([7, 8], responses.Keys.OrderBy(id => id).ToList());
+        Assert.True(responses[7]!["result"]!["isError"]!.GetValue<bool>());
+        Assert.NotNull(responses[8]!["result"]);
+    }
+
+    private static Dictionary<int, JsonNode?> ParseResponses(string output)
+    {
+        var responses = new Dictionary<int, JsonNode?>();
+        foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var node = JsonNode.Parse(line);
+            responses[node!["id"]!.GetValue<int>()] = node;
+        }
+
+        return responses;
+    }
+
     private static McpStdioServer NewServer(out FakeAgentApiClient client)
     {
         client = new FakeAgentApiClient();
@@ -165,6 +222,7 @@ public sealed class McpToolTests
     {
         public string InstanceId => Guid.NewGuid().ToString();
         public List<string> ReleasedTaskIds { get; } = [];
+        public bool SlowPolicy { get; set; }
 
         public Task<AgentStartupInfo> InitializeAsync(CancellationToken cancellationToken = default)
         {
@@ -179,14 +237,19 @@ public sealed class McpToolTests
             return Task.FromResult(Data(new { instanceId = InstanceId, suggestionsPaused = false }));
         }
 
-        public Task<JsonObject> GetPolicyAsync(CancellationToken cancellationToken = default)
+        public async Task<JsonObject> GetPolicyAsync(CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(Data(new
+            if (SlowPolicy)
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            return Data(new
             {
                 enabled = true,
                 suggestionsPaused = false,
                 policyVersion = "policy-test"
-            }));
+            });
         }
 
         public Task<JsonObject> ListTasksAsync(

@@ -78,13 +78,21 @@ public sealed class InviteAdminService(
     public const int MaxBatchSize = 100;
 
     public async Task<InviteAdminList> ListAsync(
+        Guid actorId,
         string? state,
         string? hint,
         string? member,
         int page,
+        int pageSize = PageSize,
         CancellationToken cancellationToken = default)
     {
+        if (!await adminAccess.IsAdminAsync(actorId, cancellationToken))
+        {
+            throw ApiProblemException.Forbidden();
+        }
+
         page = Math.Clamp(page, 1, 100_000);
+        pageSize = Math.Clamp(pageSize, 1, 50);
         var now = timeProvider.GetUtcNow();
         var query = db.InviteCodes.AsNoTracking();
 
@@ -123,8 +131,8 @@ public sealed class InviteAdminService(
                 join creator in db.Users.AsNoTracking() on invite.CreatedBy equals creator.Id
                 orderby invite.CreatedAt descending, invite.Id descending
                 select new { Invite = invite, CreatorHandle = creator.Handle })
-            .Skip((page - 1) * PageSize)
-            .Take(PageSize)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .ToListAsync(cancellationToken);
 
         var inviteIds = rows.Select(row => row.Invite.Id).ToList();
@@ -150,7 +158,7 @@ public sealed class InviteAdminService(
                 recentInvitees.GetValueOrDefault(row.Invite.Id, Array.Empty<string>())))
             .ToList();
 
-        return new InviteAdminList(items, page, PageSize, totalCount);
+        return new InviteAdminList(items, page, pageSize, totalCount);
     }
 
     public async Task<InviteAdminDetail?> GetDetailAsync(

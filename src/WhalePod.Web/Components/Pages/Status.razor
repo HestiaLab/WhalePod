@@ -25,6 +25,7 @@
     {
         StatusCodes.Status403Forbidden => "没有访问权限",
         StatusCodes.Status404NotFound => "页面不存在",
+        StatusCodes.Status409Conflict => "内容已被修改",
         StatusCodes.Status429TooManyRequests => "请求过于频繁",
         >= 500 => "服务暂时不可用",
         _ => "请求无法完成"
@@ -36,6 +37,7 @@
     {
         StatusCodes.Status403Forbidden => "当前账号无权访问该页面。",
         StatusCodes.Status404NotFound => "你访问的页面不存在或已被移除。",
+        StatusCodes.Status409Conflict => "内容已被其他操作修改。请返回上一页刷新后重试；本次修改未保存。",
         StatusCodes.Status429TooManyRequests => "请求过于频繁，请稍后重试。",
         >= 500 => "服务器处理请求时发生错误，请稍后重试。",
         _ => "请求未能完成，请返回首页或稍后重试。"

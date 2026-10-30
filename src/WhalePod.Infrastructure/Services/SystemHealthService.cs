@@ -87,8 +87,51 @@ public sealed class SystemHealthService(
                 .Where(email => email.Status == EmailStatuses.Pending || email.Status == EmailStatuses.Sending)
                 .MinAsync(email => (DateTimeOffset?)email.CreatedAt, cancellationToken);
 
-            var ai = await aiSettings.GetAsync(cancellationToken);
-            var aiBudget = await aiBudgetService.GetAsync(ai, cancellationToken);
+            AiSettingsData ai;
+            AiBudgetStatusView aiBudget;
+            var aiDegraded = false;
+            try
+            {
+                ai = await aiSettings.GetAsync(cancellationToken);
+                aiBudget = await aiBudgetService.GetAsync(ai, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    exception,
+                    "AI health metrics could not be read; continuing with the remaining checks.");
+                var dayStart = new DateTimeOffset(checkedAt.UtcDateTime.Date, TimeSpan.Zero);
+                ai = new AiSettingsData(
+                    false,
+                    false,
+                    [],
+                    AiSettingsService.DefaultDailyTokenBudget,
+                    AiSettingsService.DefaultDailyTaskBudget,
+                    AiSettingsService.DefaultDailyContentBudget,
+                    AiSettingsService.DefaultQualityMinDecided,
+                    AiSettingsService.DefaultQualityMinAgreement);
+                aiBudget = new AiBudgetStatusView(
+                    false,
+                    false,
+                    AiSettingsService.DefaultDailyTokenBudget,
+                    AiSettingsService.DefaultDailyTaskBudget,
+                    AiSettingsService.DefaultDailyContentBudget,
+                    0,
+                    AiSettingsService.DefaultDailyTokenBudget,
+                    0,
+                    0,
+                    false,
+                    false,
+                    false,
+                    0,
+                    false,
+                    false,
+                    dayStart,
+                    dayStart.AddDays(1),
+                    checkedAt);
+                aiDegraded = true;
+            }
+
             var heartbeatThreshold = checkedAt.AddMinutes(-5);
             var activeAgents = await db.AgentInstances
                 .AsNoTracking()
@@ -163,9 +206,25 @@ public sealed class SystemHealthService(
             var moderationErrors = moderationCounts.GetValueOrDefault(ModerationCheckResults.Error);
             var storageProvider = mediaStorageOptions.Value.Provider ?? string.Empty;
             var storageConfigured = !string.IsNullOrWhiteSpace(storageProvider);
-            var backup = backupStatusProvider.Read();
+            BackupStatus backup;
+            try
+            {
+                backup = backupStatusProvider.Read();
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    "Backup status check failed with {ErrorType}; other health checks continue.",
+                    exception.GetType().Name);
+                backup = new BackupStatus(true, null, null, null);
+            }
 
             var warnings = new List<string>();
+            if (aiDegraded)
+            {
+                warnings.Add("AI 状态读取失败，其余健康检查继续。");
+            }
+
             if (pendingMigrations > 0)
             {
                 warnings.Add("存在未应用的数据库迁移。");
@@ -267,6 +326,14 @@ public sealed class SystemHealthService(
             else if (backup.LastSuccessAt is null)
             {
                 warnings.Add("尚未发现最近一次备份成功记录。");
+            }
+            else if (backup.LastSuccessAt > checkedAt.AddHours(1))
+            {
+                warnings.Add("备份状态时间晚于当前时间，请检查服务器时钟。");
+            }
+            else if (backup.LastSuccessAt < checkedAt.AddHours(-24))
+            {
+                warnings.Add("最近一次备份已超过 24 小时，请检查备份任务。");
             }
 
             if (!storageConfigured)

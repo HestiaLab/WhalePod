@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/pg-connection.sh
+source "$SCRIPT_DIR/lib/pg-connection.sh"
+
 CONNECTION="${WHALEPOD_DB_CONNECTION:-}"
 OUTPUT_DIR="${WHALEPOD_BACKUP_DIR:-$(cd "$(dirname "$0")/.." && pwd)/artifacts/backups}"
 RETENTION_DAYS="${WHALEPOD_BACKUP_RETENTION_DAYS:-30}"
@@ -12,31 +16,19 @@ if [[ -z "$CONNECTION" ]]; then
   exit 2
 fi
 
-DATABASE=""
-DB_HOST="127.0.0.1"
-DB_PORT="5432"
-DB_USER=""
-DB_PASSWORD=""
-IFS=';' read -ra PARTS <<< "$CONNECTION"
-for part in "${PARTS[@]}"; do
-  [[ -z "$part" ]] && continue
-  key="${part%%=*}"
-  value="${part#*=}"
-  key="$(echo "$key" | tr '[:upper:]' '[:lower:]' | xargs)"
-  value="$(echo "$value" | xargs)"
-  case "$key" in
-    host) DB_HOST="$value" ;;
-    port) DB_PORT="$value" ;;
-    database) DATABASE="$value" ;;
-    username) DB_USER="$value" ;;
-    password) DB_PASSWORD="$value" ;;
-  esac
-done
-
+if ! pg_connection_parse "$CONNECTION"; then
+  exit 2
+fi
+DATABASE="$PG_CONN_DATABASE"
 if [[ -z "$DATABASE" ]]; then
   echo "Connection string must include Database." >&2
   exit 2
 fi
+case "$DATABASE" in
+  postgres|template0|template1)
+    echo "Refusing to back up a system database." >&2
+    exit 2 ;;
+esac
 
 find_tool() {
   local name="$1"
@@ -58,12 +50,9 @@ TIMESTAMP="$(date -u +%Y%m%d-%H%M%S)"
 FILE_NAME="whalepod-${DATABASE}-${TIMESTAMP}.dump"
 BACKUP_PATH="$OUTPUT_DIR/$FILE_NAME"
 
-export PGHOST="$DB_HOST"
-export PGPORT="$DB_PORT"
+pg_connection_export
 export PGDATABASE="$DATABASE"
-if [[ -n "$DB_USER" ]]; then export PGUSER="$DB_USER"; fi
-if [[ -n "$DB_PASSWORD" ]]; then export PGPASSWORD="$DB_PASSWORD"; fi
-trap 'unset PGPASSWORD' EXIT
+trap 'pg_connection_clear_secrets' EXIT
 
 "$PG_DUMP" --format=custom --compress=9 --no-owner --no-privileges --file "$BACKUP_PATH"
 

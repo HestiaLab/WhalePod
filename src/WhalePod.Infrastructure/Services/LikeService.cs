@@ -14,6 +14,41 @@ public sealed class LikeService(
     ActorGuard actorGuard,
     TimeProvider timeProvider)
 {
+    public async Task<LikeStateView> GetPostLikeStateAsync(
+        Guid viewerId,
+        Guid postId,
+        CancellationToken cancellationToken = default)
+    {
+        var liked = await db.PostLikes
+            .AsNoTracking()
+            .AnyAsync(like => like.PostId == postId && like.UserId == viewerId, cancellationToken);
+        var likeCount = await db.PostLikes
+            .AsNoTracking()
+            .CountAsync(like => like.PostId == postId, cancellationToken);
+        return new LikeStateView(liked, likeCount);
+    }
+
+    public async Task<IReadOnlyDictionary<Guid, bool>> GetCommentLikeStatesAsync(
+        Guid viewerId,
+        IReadOnlyCollection<Guid> commentIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (commentIds.Count == 0)
+        {
+            return new Dictionary<Guid, bool>();
+        }
+
+        var likedCommentIds = await db.CommentLikes
+            .AsNoTracking()
+            .Where(like => like.UserId == viewerId && commentIds.Contains(like.CommentId))
+            .Select(like => like.CommentId)
+            .ToListAsync(cancellationToken);
+        var liked = likedCommentIds.ToHashSet();
+        return commentIds
+            .Distinct()
+            .ToDictionary(commentId => commentId, commentId => liked.Contains(commentId));
+    }
+
     public async Task<LikeStateView> SetPostLikeAsync(
         Guid actorId,
         Guid postId,

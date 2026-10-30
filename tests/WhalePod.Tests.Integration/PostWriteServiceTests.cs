@@ -154,6 +154,7 @@ public sealed class PostWriteServiceTests
         var other = ServiceTestSupport.NewUser("post-validation-other");
         var category = ServiceTestSupport.NewCategory();
         var homework = ServiceTestSupport.NewCategory("抄作业");
+        homework.RequiresKernel = true;
         var hiddenTag = ServiceTestSupport.NewTag(TagStatuses.Hidden);
         var activeTag = ServiceTestSupport.NewTag();
         var foreignUpload = NewUpload(other.Id);

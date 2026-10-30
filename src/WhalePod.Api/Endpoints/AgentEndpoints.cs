@@ -94,8 +94,23 @@ internal static class AgentEndpoints
             ApiAuditContextFactory auditContextFactory) =>
         {
             var identity = RequireIdentity(http);
-            var request = await EndpointHelpers.ReadJsonAsync<AgentSuggestionRequest>(http);
             var audit = auditContextFactory.Create(identity.ServiceAccountId);
+            AgentSuggestionRequest request;
+            try
+            {
+                request = await EndpointHelpers.ReadJsonAsync<AgentSuggestionRequest>(http);
+            }
+            catch (ApiProblemException exception) when (exception.Code == ApiErrorCodes.ValidationFailed)
+            {
+                await failures.RecordSuggestionInvalidAsync(
+                    identity.ServiceAccountId,
+                    taskId,
+                    ApiErrorCodes.ValidationFailed,
+                    audit,
+                    http.RequestAborted);
+                throw;
+            }
+
             try
             {
                 var (result, replayed) = await service.SubmitSuggestionAsync(
@@ -116,6 +131,7 @@ internal static class AgentEndpoints
                 await failures.RecordSuggestionInvalidAsync(
                     identity.ServiceAccountId,
                     taskId,
+                    ApiErrorCodes.SuggestionInvalid,
                     audit,
                     http.RequestAborted);
                 throw;

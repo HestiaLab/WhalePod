@@ -284,7 +284,7 @@ public sealed class SensitiveWordAdminService(
         return SensitiveWordOutcome.Success;
     }
 
-    private static string ReadPolicyHit(SiteSetting? setting)
+    internal static string ReadPolicyHit(SiteSetting? setting)
     {
         if (setting is null
             || setting.Value.RootElement.ValueKind != JsonValueKind.Object

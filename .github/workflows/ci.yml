@@ -19,6 +19,8 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: "true"
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
   WHALEPOD_TEST_DB_CONNECTION: "Host=127.0.0.1;Port=5432;Database=whalepod_test;Username=postgres;Password=postgres"
+  # GitHub Actions service containers expose the database through Docker NAT.
+  WHALEPOD_TEST_ALLOW_NON_LOOPBACK: "true"
 
 jobs:
   build-test:
@@ -27,7 +29,7 @@ jobs:
     timeout-minutes: 30
     services:
       postgres:
-        image: postgres:18
+        image: postgres:18.6
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -41,12 +43,20 @@ jobs:
           --health-retries 20
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.4.0
+
+      - name: 初始化测试数据库扩展
+        shell: bash
+        run: |
+          container=$(docker ps --format '{{.ID}} {{.Image}}' | awk '$2 ~ /postgres/ {print $1; exit}')
+          test -n "$container"
+          docker exec "$container" psql -U postgres -d whalepod_test -c "CREATE EXTENSION IF NOT EXISTS citext;"
+          docker exec "$container" psql -U postgres -d template1 -c "CREATE EXTENSION IF NOT EXISTS citext;"
 
       - name: 安装 .NET SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v4.3.1
         with:
-          dotnet-version: "10.0.x"
+          dotnet-version: "10.0.401"
           cache: true
           cache-dependency-path: |
             **/*.csproj
@@ -54,7 +64,7 @@ jobs:
             global.json
 
       - name: 还原依赖
-        run: dotnet restore WhalePod.slnx
+        run: dotnet restore WhalePod.slnx --locked-mode
 
       - name: 构建
         run: dotnet build WhalePod.slnx -c Release --no-restore
@@ -96,7 +106,7 @@ jobs:
 
       - name: 上传测试结果
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: test-results
           path: TestResults/**/*.trx

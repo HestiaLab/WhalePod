@@ -9,19 +9,7 @@ namespace WhalePod.Tests.Integration;
 
 public sealed class AiSettingsServiceTests
 {
-    private static string ConnectionString =>
-        Environment.GetEnvironmentVariable("WHALEPOD_TEST_DB_CONNECTION")
-        ?? throw new InvalidOperationException("WHALEPOD_TEST_DB_CONNECTION is required.");
-
-    private static WhalePodDbContext CreateContext()
-    {
-        var options = new DbContextOptionsBuilder<WhalePodDbContext>()
-            .UseNpgsql(ConnectionString)
-            .UseSnakeCaseNamingConvention()
-            .Options;
-
-        return new WhalePodDbContext(options);
-    }
+    private static WhalePodDbContext CreateContext() => ServiceTestSupport.CreateContext();
 
     [DatabaseFact]
     public async Task Enable_requires_models_confirmation_and_persists_audited_settings()

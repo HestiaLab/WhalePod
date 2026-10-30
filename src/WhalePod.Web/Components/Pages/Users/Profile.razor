@@ -1,10 +1,13 @@
 @page "/users/{Handle}"
 @layout PublicLayout
+@using System.Security.Claims
 @using System.Text.Json
+@using Microsoft.AspNetCore.Antiforgery
 @using WhalePod.Infrastructure.Services
 @using WhalePod.Web.Services
 @inject PublicContentService PublicContent
 @inject PublicSiteLinks SiteLinks
+@inject IAntiforgery Antiforgery
 @inject IHttpContextAccessor HttpContextAccessor
 
 @if (ProfileData is null)
@@ -26,6 +29,15 @@ else
              Description="@SeoDescription"
              CanonicalPath="@CanonicalPath" />
     <JsonLd Json="@PersonJsonLd" />
+
+    @if (Message == "report-submitted")
+    {
+        <p class="alert alert-success" role="status">举报已提交，管理员会处理。</p>
+    }
+    @if (Error == "report-invalid")
+    {
+        <p class="alert alert-error" role="alert">举报信息不符合要求，请检查原因与补充说明。</p>
+    }
 
     <nav class="breadcrumb" aria-label="面包屑">
         <a href="/">首页</a>
@@ -102,6 +114,20 @@ else
         </div>
     </section>
 
+    @if (IsAuthenticated && ViewerId is not null && ViewerId.Value != ProfileData.Id)
+    {
+        <section class="profile-report" aria-labelledby="profile-report-heading">
+            <details class="action-disclosure">
+                <summary class="button button-secondary button-compact">举报该用户</summary>
+                <h2 id="profile-report-heading" class="sr-only">举报该用户</h2>
+                <ReportForm TargetType="user"
+                            TargetId="@ProfileData.Id"
+                            ReturnUrl="@($"/users/{ProfileData.Handle}")"
+                            Token="@Token" />
+            </details>
+        </section>
+    }
+
     <section class="profile-posts" aria-labelledby="profile-posts-heading">
         <div class="section-head">
             <div>
@@ -156,9 +182,18 @@ else
     [SupplyParameterFromQuery(Name = "cursor")]
     public string? Cursor { get; set; }
 
+    [SupplyParameterFromQuery(Name = "message")]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery(Name = "error")]
+    public string? Error { get; set; }
+
     private UserProfileView? ProfileData { get; set; }
     private FeedPage? Posts { get; set; }
     private string? CursorError { get; set; }
+    private string Token { get; set; } = string.Empty;
+    private Guid? ViewerId { get; set; }
+    private bool IsAuthenticated { get; set; }
 
     private bool HasSafeAvatar => IsSafeAvatarUrl(ProfileData?.AvatarUrl);
 
@@ -210,11 +245,23 @@ else
     {
         var http = HttpContextAccessor.HttpContext
             ?? throw new InvalidOperationException("HttpContext is unavailable.");
+        IsAuthenticated = http.User.Identity?.IsAuthenticated == true;
+        if (Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var viewerId))
+        {
+            ViewerId = viewerId;
+        }
+
         ProfileData = await PublicContent.GetUserProfileAsync(Handle);
         if (ProfileData is null)
         {
             StatusCodeResponse.NotFound(http);
             return;
+        }
+
+        if (IsAuthenticated)
+        {
+            Token = Antiforgery.GetAndStoreTokens(http).RequestToken
+                ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
         }
 
         if (Cursor?.Length > 512)

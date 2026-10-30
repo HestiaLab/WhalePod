@@ -105,6 +105,40 @@ public sealed class ImageUploadService(
             upload.ByteSize);
     }
 
+    public async Task<bool> DeleteTempAsync(
+        Guid actorId,
+        Guid uploadId,
+        AuditContext audit,
+        CancellationToken cancellationToken = default)
+    {
+        var actor = await actorGuard.RequireWriteAccessAsync(
+            actorId,
+            ActorWriteScope.Content,
+            cancellationToken);
+        var upload = await db.MediaUploads
+            .SingleOrDefaultAsync(candidate => candidate.Id == uploadId
+                && candidate.OwnerId == actor.Id
+                && candidate.Status == MediaUploadStatuses.Temp,
+                cancellationToken);
+        if (upload is null)
+        {
+            return false;
+        }
+
+        var now = timeProvider.GetUtcNow();
+        upload.Status = MediaUploadStatuses.Deleted;
+        upload.ExpiresAt = now;
+        db.AuditLogs.Add(AuditLogWriter.CreateUserAction(
+            audit,
+            "media.discarded",
+            "media_upload",
+            upload.Id,
+            null,
+            now));
+        await db.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
     public async Task<AvatarUploadResultView> UploadAvatarAsync(
         Guid actorId,
         Stream file,
@@ -128,22 +162,6 @@ public sealed class ImageUploadService(
             decoded.MimeType,
             cancellationToken);
 
-        var user = await db.Users.SingleAsync(
-            candidate => candidate.Id == actor.Id,
-            cancellationToken);
-        var previousUrl = user.AvatarUrl;
-        var previousAvatars = await db.MediaUploads
-            .Where(upload => upload.OwnerId == actor.Id
-                && upload.Status == MediaUploadStatuses.Avatar
-                && previousUrl != null
-                && upload.Url == previousUrl)
-            .ToListAsync(cancellationToken);
-        foreach (var previous in previousAvatars)
-        {
-            previous.Status = MediaUploadStatuses.Deleted;
-            previous.ExpiresAt = now;
-        }
-
         var avatar = new MediaUpload
         {
             OwnerId = actor.Id,
@@ -156,34 +174,61 @@ public sealed class ImageUploadService(
             CreatedAt = now,
             ExpiresAt = now.AddYears(100)
         };
-        db.MediaUploads.Add(avatar);
-        user.AvatarUrl = url;
-        user.UpdatedAt = now;
-        db.AuditLogs.Add(AuditLogWriter.CreateUserAction(
-            audit,
-            "user.avatar_updated",
-            "user",
-            user.Id,
-            new
-            {
-                mimeType = avatar.MimeType,
-                width = avatar.Width,
-                height = avatar.Height,
-                byteSize = avatar.ByteSize
-            },
-            now));
 
         try
         {
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                "SELECT pg_advisory_xact_lock(7210521)",
+                cancellationToken);
+            db.ChangeTracker.Clear();
+            var user = await db.Users.SingleAsync(
+                candidate => candidate.Id == actor.Id,
+                cancellationToken);
+            if (user.DeletedAt is not null || user.Status == UserStatuses.Deleted)
+            {
+                throw ApiProblemException.Conflict("账号已注销，不能上传头像。");
+            }
+
+            var previousUrl = user.AvatarUrl;
+            var previousAvatars = await db.MediaUploads
+                .Where(upload => upload.OwnerId == actor.Id
+                    && upload.Status == MediaUploadStatuses.Avatar
+                    && previousUrl != null
+                    && upload.Url == previousUrl)
+                .ToListAsync(cancellationToken);
+            foreach (var previous in previousAvatars)
+            {
+                previous.Status = MediaUploadStatuses.Deleted;
+                previous.ExpiresAt = now;
+            }
+
+            db.MediaUploads.Add(avatar);
+            user.AvatarUrl = url;
+            user.UpdatedAt = now;
+            db.AuditLogs.Add(AuditLogWriter.CreateUserAction(
+                audit,
+                "user.avatar_updated",
+                "user",
+                user.Id,
+                new
+                {
+                    mimeType = avatar.MimeType,
+                    width = avatar.Width,
+                    height = avatar.Height,
+                    byteSize = avatar.ByteSize
+                },
+                now));
+
             await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return new AvatarUploadResultView(user.AvatarUrl, user.GitHubAvatarUrl);
         }
         catch
         {
             await TryDeleteAsync(url, avatar.Id);
             throw;
         }
-
-        return new AvatarUploadResultView(user.AvatarUrl, user.GitHubAvatarUrl);
     }
 
     public async Task<AvatarUploadResultView> ClearAvatarAsync(

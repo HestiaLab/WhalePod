@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 using WhalePod.Domain;
 using WhalePod.Domain.Accounts;
@@ -10,7 +11,15 @@ using WhalePod.Infrastructure.Persistence;
 
 namespace WhalePod.Infrastructure.Services;
 
-public sealed class PublicSearchService(WhalePodDbContext db)
+public sealed class PublicSearchOptions
+{
+    public int TimeoutSeconds { get; set; } = 3;
+    public int RateLimitPerMinute { get; set; } = 30;
+}
+
+public sealed class PublicSearchService(
+    WhalePodDbContext db,
+    IOptions<PublicSearchOptions> options)
 {
     public async Task<SearchResultView> SearchAsync(
         string? query,
@@ -18,6 +27,18 @@ public sealed class PublicSearchService(WhalePodDbContext db)
         int limit,
         string? cursor,
         CancellationToken cancellationToken = default)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, options.Value.TimeoutSeconds)));
+        return await SearchCoreAsync(query, type, limit, cursor, timeout.Token);
+    }
+
+    private async Task<SearchResultView> SearchCoreAsync(
+        string? query,
+        string? type,
+        int limit,
+        string? cursor,
+        CancellationToken cancellationToken)
     {
         var normalizedQuery = (query ?? string.Empty).Trim();
         var normalizedType = string.IsNullOrWhiteSpace(type) ? "posts" : type.Trim().ToLowerInvariant();
@@ -416,6 +437,11 @@ public sealed class PublicSearchService(WhalePodDbContext db)
             var ticks = root.GetProperty("t").GetInt64();
             rank = root.GetProperty("r").GetInt32();
             id = root.GetProperty("i").GetGuid();
+            if (ticks < DateTimeOffset.MinValue.UtcTicks || ticks > DateTimeOffset.MaxValue.UtcTicks)
+            {
+                return false;
+            }
+
             value = new DateTimeOffset(ticks, TimeSpan.Zero);
             return true;
         }

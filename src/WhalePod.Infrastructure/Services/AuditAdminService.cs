@@ -15,7 +15,9 @@ public sealed record AuditFilter(
     string? TargetType,
     Guid? TargetId,
     DateTimeOffset From,
-    DateTimeOffset ToExclusive);
+    DateTimeOffset ToExclusive,
+    string? ActorType = null,
+    Guid? ActorId = null);
 
 public sealed record AuditListItem(
     Guid Id,
@@ -47,17 +49,28 @@ public sealed record AuditExportRow(
     string? RequestId,
     string MetadataJson);
 
-public sealed class AuditAdminService(WhalePodDbContext db, TimeProvider timeProvider)
+public sealed class AuditAdminService(
+    WhalePodDbContext db,
+    AdminAccessService adminAccess,
+    TimeProvider timeProvider)
 {
     public const int PageSize = 20;
     public const int MaxExportDays = 31;
 
     public async Task<AuditListResult> ListAsync(
+        Guid actorId,
         AuditFilter filter,
         int page,
+        int pageSize = PageSize,
         CancellationToken cancellationToken = default)
     {
+        if (!await adminAccess.IsAdminAsync(actorId, cancellationToken))
+        {
+            throw ApiProblemException.Forbidden();
+        }
+
         page = Math.Clamp(page, 1, 100_000);
+        pageSize = Math.Clamp(pageSize, 1, 50);
         var query = BuildQuery(filter);
         var totalCount = await query.CountAsync(cancellationToken);
 
@@ -78,8 +91,8 @@ public sealed class AuditAdminService(WhalePodDbContext db, TimeProvider timePro
                     log.TargetId,
                     log.RequestId
                 })
-            .Skip((page - 1) * PageSize)
-            .Take(PageSize)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .ToListAsync(cancellationToken);
 
         var items = rows
@@ -95,7 +108,7 @@ public sealed class AuditAdminService(WhalePodDbContext db, TimeProvider timePro
                 row.RequestId))
             .ToList();
 
-        return new AuditListResult(items, totalCount, page, PageSize);
+        return new AuditListResult(items, totalCount, page, pageSize);
     }
 
     public async Task<AuditDetailResult?> GetDetailAsync(
@@ -221,6 +234,16 @@ public sealed class AuditAdminService(WhalePodDbContext db, TimeProvider timePro
         var query = db.AuditLogs
             .AsNoTracking()
             .Where(log => log.CreatedAt >= filter.From && log.CreatedAt < filter.ToExclusive);
+
+        if (!string.IsNullOrWhiteSpace(filter.ActorType))
+        {
+            query = query.Where(log => log.ActorType == filter.ActorType);
+        }
+
+        if (filter.ActorId is not null)
+        {
+            query = query.Where(log => log.ActorId == filter.ActorId);
+        }
 
         if (!string.IsNullOrWhiteSpace(filter.ActorHandle))
         {

@@ -69,8 +69,8 @@ else
                                     <option value="accepted">通过并恢复</option>
                                     <option value="rejected">驳回申诉</option>
                                 </select>
-                                <label for="note-@appeal.Id">复核说明</label>
-                                <textarea id="note-@appeal.Id" name="note" rows="3" maxlength="1000" required></textarea>
+                                <label for="note-@appeal.Id">复核说明（1-500 字）</label>
+                                <textarea id="note-@appeal.Id" name="note" rows="3" maxlength="500" required></textarea>
                                 <button type="submit">提交复核</button>
                             </form>
                         </td>
@@ -79,6 +79,19 @@ else
             </tbody>
         </table>
     </div>
+    @if (Items.Count >= 50 || Page > 1)
+    {
+        <nav class="pagination" aria-label="申诉分页">
+            @if (Page > 1)
+            {
+                <a class="button button-secondary" href="/admin/appeals?page=@(Page - 1)">上一页</a>
+            }
+            @if (Items.Count >= 50)
+            {
+                <a class="button button-secondary" href="/admin/appeals?page=@(Page + 1)">下一页</a>
+            }
+        </nav>
+    }
 }
 
 @code {
@@ -87,6 +100,9 @@ else
 
     [SupplyParameterFromQuery]
     public string? Error { get; set; }
+
+    [SupplyParameterFromQuery(Name = "page")]
+    public int Page { get; set; } = 1;
 
     private IReadOnlyList<AdminAppealView>? Items { get; set; }
     private string Token { get; set; } = string.Empty;
@@ -132,6 +148,6 @@ else
             return;
         }
 
-        Items = await AppealService.GetPendingAsync(userId);
+        Items = await AppealService.GetPendingAsync(userId, Page);
     }
 }

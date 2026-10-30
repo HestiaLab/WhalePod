@@ -6,6 +6,8 @@ const SCENARIO = __ENV.SCENARIO || 'feed';
 const BASE = __ENV.BASE_URL;
 const POST_ID = __ENV.POST_ID;
 const QUERY = __ENV.QUERY || '测试';
+const DURATION = __ENV.DURATION || '10m';
+const RATE = Number(__ENV.RATE || 0);
 
 if (!BASE) {
   throw new Error('BASE_URL is required.');
@@ -37,9 +39,9 @@ export const options = {
   scenarios: {
     [`${MODE}_${SCENARIO}`]: {
       executor: 'constant-arrival-rate',
-      rate: selected.rate,
+      rate: RATE > 0 ? RATE : selected.rate,
       timeUnit: '1s',
-      duration: '30s',
+      duration: DURATION,
       preAllocatedVUs: Math.max(10, Math.min(selected.rate, 100)),
       maxVUs: Math.max(50, selected.rate * 3),
     },
@@ -47,6 +49,8 @@ export const options = {
   thresholds: {
     http_req_failed: ['rate<0.01'],
     http_req_duration: ['p(95)<1500', 'p(99)<3000'],
+    checks: ['rate>0.99'],
+    dropped_iterations: ['count<100'],
   },
   summaryTrendStats: ['min', 'med', 'p(50)', 'p(90)', 'p(95)', 'p(99)', 'max'],
 };

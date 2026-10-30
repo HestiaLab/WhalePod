@@ -59,6 +59,32 @@ public sealed class BackupStatusProviderTests
         }
     }
 
+    [Fact]
+    public void Array_root_and_wrong_field_types_are_rejected_without_throwing()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"whalepod-backup-status-{Guid.NewGuid():N}.json");
+        try
+        {
+            File.WriteAllText(path, """[{"lastSuccessUtc":"2026-10-26T02:47:31Z"}]""");
+            var arrayRoot = CreateProvider(path).Read();
+            Assert.True(arrayRoot.Configured);
+            Assert.Null(arrayRoot.LastSuccessAt);
+
+            File.WriteAllText(
+                path,
+                """{"lastSuccessUtc":123456,"database":42,"bytes":"large"}""");
+            var wrongTypes = CreateProvider(path).Read();
+            Assert.True(wrongTypes.Configured);
+            Assert.Null(wrongTypes.LastSuccessAt);
+            Assert.Null(wrongTypes.Database);
+            Assert.Null(wrongTypes.Bytes);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static BackupStatusProvider CreateProvider(string? path)
     {
         var configuration = new TestConfiguration(

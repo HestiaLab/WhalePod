@@ -1,4 +1,7 @@
 @inherits LayoutComponentBase
+@using Microsoft.AspNetCore.Antiforgery
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
 
 <a class="skip-link" href="#main-content" data-enhance-nav="false">跳到正文</a>
 
@@ -51,6 +54,10 @@
                                     </Authorized>
                                 </AuthorizeView>
                             </nav>
+                            <form method="post" action="/logout">
+                                <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                                <button type="submit" class="link-button">退出登录</button>
+                            </form>
                         </div>
                     </details>
                 </Authorized>
@@ -95,6 +102,10 @@
                                         <NavLink class="nav-link" href="/admin">管理后台</NavLink>
                                     </Authorized>
                                 </AuthorizeView>
+                                <form method="post" action="/logout">
+                                    <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                                    <button type="submit" class="link-button">退出登录</button>
+                                </form>
                             </Authorized>
                             <NotAuthorized>
                                 <p class="nav-group-label">账号</p>
@@ -160,6 +171,17 @@
 </footer>
 
 @code {
+    private string Token { get; set; } = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        var httpContext = HttpContextAccessor.HttpContext;
+        if (httpContext?.User.Identity?.IsAuthenticated == true)
+        {
+            Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken ?? string.Empty;
+        }
+    }
+
     private static string Initial(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))

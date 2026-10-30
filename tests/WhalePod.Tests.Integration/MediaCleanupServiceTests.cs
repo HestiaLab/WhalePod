@@ -120,6 +120,66 @@ public sealed class MediaCleanupServiceTests
         Assert.True(File.Exists(media.ResolvePath(expired.Url)));
     }
 
+    [DatabaseFact]
+    public async Task Failed_cleanup_backs_off_quarantines_and_does_not_starve_later_objects()
+    {
+        await using var db = ServiceTestSupport.CreateContext();
+        await db.Database.MigrateAsync();
+        await ResetMediaUploadsAsync(db);
+        using var media = new TestMediaStorage();
+
+        var author = ServiceTestSupport.NewUser("cleanup-backoff");
+        db.Users.Add(author);
+        await db.SaveChangesAsync();
+
+        var failing = await AddUploadAsync(
+            db,
+            media,
+            author.Id,
+            MediaUploadStatuses.Temp,
+            new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            postId: null);
+        await db.SaveChangesAsync();
+
+        var cleanup = ServiceTestSupport.CreateMediaCleanupService(db, new FailingMediaStorage());
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            var result = await cleanup.CleanupOnceAsync(10);
+            Assert.Equal(1, result.Failed);
+            db.ChangeTracker.Clear();
+            var stored = await db.MediaUploads.SingleAsync(upload => upload.Id == failing.Id);
+            Assert.Equal(attempt, stored.CleanupAttempts);
+            if (attempt < 5)
+            {
+                stored.NextAttemptAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+                await db.SaveChangesAsync();
+            }
+            else
+            {
+                Assert.True(stored.NextAttemptAt > DateTimeOffset.UtcNow.AddDays(6));
+            }
+        }
+
+        Assert.True(await db.AuditLogs.AnyAsync(log =>
+            log.Action == "media.cleanup_quarantined" && log.TargetId == failing.Id));
+
+        var healthy = await AddUploadAsync(
+            db,
+            media,
+            author.Id,
+            MediaUploadStatuses.Temp,
+            new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            postId: null);
+        await db.SaveChangesAsync();
+        var healthyCleanup = ServiceTestSupport.CreateMediaCleanupService(db, media.Storage);
+        var outcome = await healthyCleanup.CleanupOnceAsync(10);
+        Assert.True(outcome.Deleted >= 1);
+
+        db.ChangeTracker.Clear();
+        Assert.False(await db.MediaUploads.AnyAsync(upload => upload.Id == healthy.Id));
+        Assert.True(await db.MediaUploads.AnyAsync(upload => upload.Id == failing.Id));
+    }
+
     private static async Task ResetMediaUploadsAsync(WhalePodDbContext db)
     {
         await db.PostImages.ExecuteDeleteAsync();

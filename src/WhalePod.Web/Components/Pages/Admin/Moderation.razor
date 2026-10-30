@@ -126,6 +126,10 @@ else
                                     {
                                         <input type="hidden" name="suggestionId" value="@item.AiSuggestion.Id" />
                                     }
+                                    <label>
+                                        <input type="checkbox" name="confirm" value="yes" required />
+                                        确认通过
+                                    </label>
                                     <button type="submit">快速通过</button>
                                 </form>
                             }
@@ -176,6 +180,7 @@ else
         "validation" => "审核参数无效：驳回、隐藏、删除或升级必须填写原因。",
         "missing" => "待审核内容不存在或已删除。",
         "forbidden" => "当前账号无权执行该审核操作。",
+        "confirm" => "请先勾选确认再提交审核动作。",
         _ => null
     };
 

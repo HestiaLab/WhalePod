@@ -38,6 +38,25 @@ public sealed class CommentWriteService(
         var now = timeProvider.GetUtcNow();
         var bodyMd = NormalizeBody(command.BodyMd);
         var rendered = MarkdownRenderer.Render(bodyMd);
+        var sensitive = await SensitiveWordPolicy.EvaluateAsync(db, bodyMd, cancellationToken);
+        if (sensitive.Reject && actor.Role != UserRoles.Admin)
+        {
+            db.AuditLogs.Add(AuditLogWriter.CreateUserAction(
+                audit,
+                "sensitive_word.rejected",
+                "comment",
+                null,
+                new
+                {
+                    policy = sensitive.Policy,
+                    policyUpdatedAt = sensitive.PolicyUpdatedAt,
+                    matchedTerms = sensitive.MatchedTerms,
+                    stage = "create"
+                },
+                now));
+            await db.SaveChangesAsync(cancellationToken);
+            throw ApiProblemException.Validation("bodyMd", "评论包含不允许发布的词，请修改后重试。");
+        }
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var postExists = await db.Posts
@@ -81,6 +100,15 @@ public sealed class CommentWriteService(
         };
 
         db.Comments.Add(comment);
+        if (sensitive.HasMatches)
+        {
+            db.ModerationChecks.Add(SensitiveWordPolicy.CreateCheck(
+                "comment",
+                comment.Id,
+                comment.Version,
+                sensitive,
+                now));
+        }
         db.AuditLogs.Add(AuditLogWriter.CreateUserAction(
             audit,
             "comment.created",
@@ -176,13 +204,86 @@ public sealed class CommentWriteService(
             throw ApiProblemException.Validation("reason", "原因不能超过 500 个字符。");
         }
 
+        var sensitive = await SensitiveWordPolicy.EvaluateAsync(db, bodyMd, cancellationToken);
+        if (sensitive.Reject && !isAdmin)
+        {
+            var rejectedAt = timeProvider.GetUtcNow();
+            db.AuditLogs.Add(AuditLogWriter.CreateUserAction(
+                audit,
+                "sensitive_word.rejected",
+                "comment",
+                comment.Id,
+                new
+                {
+                    policy = sensitive.Policy,
+                    policyUpdatedAt = sensitive.PolicyUpdatedAt,
+                    matchedTerms = sensitive.MatchedTerms,
+                    stage = "update"
+                },
+                rejectedAt));
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            throw ApiProblemException.Validation("bodyMd", "评论包含不允许发布的词，请修改后重试。");
+        }
+
         comment.BodyMd = bodyMd;
         comment.BodyHtml = rendered.Html;
         comment.Version++;
         comment.UpdatedAt = now;
+        if (sensitive.HasMatches)
+        {
+            db.ModerationChecks.Add(SensitiveWordPolicy.CreateCheck(
+                "comment",
+                comment.Id,
+                comment.Version,
+                sensitive,
+                now));
+        }
         if (!isAdmin)
         {
             comment.ModerationStatus = ModerationStatuses.Pending;
+            var parentPost = await db.Posts
+                .SingleAsync(candidate => candidate.Id == comment.PostId, cancellationToken);
+            if (comment.IsAccepted || parentPost.AcceptedCommentId == comment.Id)
+            {
+                comment.IsAccepted = false;
+                parentPost.AcceptedCommentId = null;
+                parentPost.IsSolved = false;
+                parentPost.Version++;
+                parentPost.UpdatedAt = now;
+                db.AuditLogs.Add(AuditLogWriter.CreateUserAction(
+                    audit,
+                    "post.acceptance_cleared",
+                    "post",
+                    parentPost.Id,
+                    new { commentId = comment.Id, reason = "comment_edited" },
+                    now));
+                if (parentPost.AuthorId != actorId)
+                {
+                    var payload = new
+                    {
+                        summary = "被采纳的评论已编辑并进入待审核，帖子已恢复为未解决。",
+                        targetType = "post",
+                        targetId = parentPost.Id,
+                        targetUrl = $"/posts/{parentPost.Id}",
+                        action = "acceptance_cleared"
+                    };
+                    var dedupeKey = $"comment-acceptance-cleared:{comment.Id:N}:{comment.Version}";
+                    db.Notifications.Add(NotificationWriter.Create(
+                        parentPost.AuthorId,
+                        NotificationTypes.CommentAccepted,
+                        payload,
+                        dedupeKey,
+                        now));
+                    await emailQueue.EnqueueForNotificationAsync(
+                        parentPost.AuthorId,
+                        NotificationTypes.CommentAccepted,
+                        payload,
+                        dedupeKey,
+                        now,
+                        cancellationToken);
+                }
+            }
         }
 
         db.AuditLogs.Add(AuditLogWriter.CreateUserAction(

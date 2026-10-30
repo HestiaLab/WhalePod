@@ -93,6 +93,7 @@ public sealed class GitHubOAuthService(
     WhalePodDbContext db,
     HttpClient httpClient,
     Microsoft.Extensions.Options.IOptions<GitHubOAuthOptions> options,
+    AdminBootstrapService adminBootstrap,
     TimeProvider timeProvider,
     ILogger<GitHubOAuthService> logger)
 {
@@ -353,6 +354,7 @@ public sealed class GitHubOAuthService(
         });
 
         await db.SaveChangesAsync(cancellationToken);
+        await adminBootstrap.EnsureAdminAsync(user, loginAudit, cancellationToken);
         return new GitHubSignInResult(GitHubSignInOutcome.Success, user, created);
     }
 

@@ -19,6 +19,7 @@ public sealed class User
     public string? StatusReason { get; set; }
     public DateTimeOffset? StatusExpiresAt { get; set; }
     public string Role { get; set; } = UserRoles.Member;
+    public int SessionVersion { get; set; } = 1;
     public DateTimeOffset? ActivatedAt { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;

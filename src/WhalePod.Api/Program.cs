@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading.RateLimiting;
 
 using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http.Features;
@@ -133,7 +134,9 @@ builder.Services.AddScoped<DeviceVerificationService>();
 builder.Services.AddHostedService<DeviceChallengeCleanupWorker>();
 builder.Services.AddScoped<PublicContentService>();
 builder.Services.AddScoped<PublicSearchService>();
+builder.Services.Configure<PublicSearchOptions>(builder.Configuration.GetSection("PublicSearch"));
 builder.Services.AddScoped<AdminAccessService>();
+builder.Services.AddScoped<SessionValidator>();
 builder.Services.AddScoped<ServiceAccountAdminService>();
 builder.Services.AddScoped<AiSettingsService>();
 builder.Services.AddScoped<AiBudgetService>();
@@ -149,6 +152,9 @@ builder.Services.AddScoped<NotificationService>();
 builder.Services.AddScoped<ContentModerationService>();
 builder.Services.AddScoped<AdminUserService>();
 builder.Services.AddScoped<ReportService>();
+builder.Services.AddScoped<InviteAdminService>();
+builder.Services.AddScoped<CategoryAdminService>();
+builder.Services.AddScoped<AuditAdminService>();
 builder.Services.AddScoped<AuthorContentService>();
 builder.Services.AddScoped<ImageUploadService>();
 builder.Services.AddScoped<MediaCleanupService>();
@@ -189,6 +195,15 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
             : CookieSecurePolicy.Always;
         options.ExpireTimeSpan = TimeSpan.FromHours(8);
         options.SlidingExpiration = true;
+        options.Events.OnValidatePrincipal = async context =>
+        {
+            var validator = context.HttpContext.RequestServices.GetRequiredService<SessionValidator>();
+            if (!await validator.IsValidAsync(context.Principal, context.HttpContext.RequestAborted))
+            {
+                context.RejectPrincipal();
+                await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+            }
+        };
         options.Events.OnRedirectToLogin = context => ApiEnvelope.WriteProblemAsync(
             context.HttpContext,
             StatusCodes.Status401Unauthorized,
@@ -243,6 +258,20 @@ builder.Services.AddRateLimiter(options =>
         DeviceRateLimitPartition(context, "device-complete", deviceCompleteLimit));
     options.AddPolicy("device-write", context =>
         DeviceRateLimitPartition(context, "device-write", deviceWriteLimit));
+    options.AddPolicy("public-search", context =>
+    {
+        var userId = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
+        var partitionKey = string.IsNullOrWhiteSpace(userId)
+            ? $"search-ip:{context.Connection.RemoteIpAddress?.ToString() ?? "unknown"}"
+            : $"search-user:{userId}";
+        return RateLimitPartition.GetFixedWindowLimiter(partitionKey, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = builder.Configuration.GetValue("PublicSearch:RateLimitPerMinute", 30),
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        });
+    });
     options.AddPolicy("agent-read", context =>
         AgentRateLimitPartition(context, "agent-read", agentReadLimit));
     options.AddPolicy("agent-write", context =>
@@ -255,10 +284,30 @@ builder.Services.AddRateLimiter(options =>
 
 var app = builder.Build();
 
+if (!app.Environment.IsDevelopment())
+{
+    var allowedHosts = builder.Configuration["AllowedHosts"];
+    if (string.IsNullOrWhiteSpace(allowedHosts) || allowedHosts.Contains('*'))
+    {
+        throw new InvalidOperationException(
+            "AllowedHosts must list explicit production host names.");
+    }
+}
+
 if (forwardedHeadersEnabled)
 {
     app.UseForwardedHeaders();
 }
+
+app.Use(async (context, next) =>
+{
+    var headers = context.Response.Headers;
+    headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+    headers["X-Content-Type-Options"] = "nosniff";
+    headers["X-Frame-Options"] = "SAMEORIGIN";
+    headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()";
+    await next();
+});
 
 var requestUserHashKey = string.IsNullOrWhiteSpace(ipHashSecret)
     ? null
@@ -340,19 +389,21 @@ app.MapGet("/healthz", () => Results.Ok(new
     service = "whalepod-api"
 }));
 
-app.MapGet("/healthz/ready", async (WhalePodDbContext db, ILogger<Program> logger, CancellationToken cancellationToken) =>
+app.MapGet("/healthz/ready", async (
+    WhalePodDbContext db,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
 {
-    try
+    var readiness = await DatabaseReadiness.CheckAsync(db, cancellationToken);
+    if (readiness.Ready)
     {
-        return await db.Database.CanConnectAsync(cancellationToken)
-            ? Results.Ok(new { status = "ready", database = "ok" })
-            : Results.Json(new { status = "not_ready", database = "unavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        return Results.Ok(new { status = "ready", database = "ok" });
     }
-    catch (Exception exception)
-    {
-        logger.LogWarning(exception, "Database readiness check failed.");
-        return Results.Json(new { status = "not_ready", database = "unavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable);
-    }
+
+    logger.LogWarning("Database readiness check failed: {Reason}.", readiness.Reason);
+    return Results.Json(
+        new { status = "not_ready", database = "unavailable", reason = readiness.Reason },
+        statusCode: StatusCodes.Status503ServiceUnavailable);
 });
 
 app.MapGet("/api/v1/categories", async (
@@ -664,12 +715,23 @@ app.MapGet("/api/v1/search", async (
         return ApiError("VALIDATION_FAILED", "cursor 过长。", StatusCodes.Status400BadRequest);
     }
 
-    var result = await search.SearchAsync(
-        normalizedQuery,
-        normalizedType,
-        parsedLimit,
-        cursor,
-        cancellationToken);
+    WhalePod.Infrastructure.Services.SearchResultView result;
+    try
+    {
+        result = await search.SearchAsync(
+            normalizedQuery,
+            normalizedType,
+            parsedLimit,
+            cursor,
+            cancellationToken);
+    }
+    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+    {
+        return ApiError(
+            "SEARCH_TIMEOUT",
+            "搜索超时，请稍后重试。",
+            StatusCodes.Status504GatewayTimeout);
+    }
 
     if (result.InvalidCursor)
     {
@@ -698,7 +760,7 @@ app.MapGet("/api/v1/search", async (
     }
 
     return Results.Ok(new { data });
-});
+}).RequireRateLimiting("public-search");
 
 app.MapContentWriteEndpoints();
 app.MapDeviceEndpoints();

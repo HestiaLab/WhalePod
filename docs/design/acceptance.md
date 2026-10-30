@@ -10,16 +10,18 @@
 
 本记录合并了各阶段 UAT 结果，只保留交付结论与证据；过程日志不再单独维护。生产配置与回滚见 [production-readiness.md](production-readiness.md)，性能数据见 [performance.md](performance.md)。
 
+> 证据口径：下表“通过/部分”均为**本地开发环境**结论，不代表生产通过。2026-10-28 整改前的历史浏览器/axe/恢复结论未随仓库留存原始命令、提交号、日志或截图（仅保留结论）；本次整改新增的 TRX、截图与脚本路径见 [fix-log](../reports/fix-log-2026-10-28.md)。外部前置项在“说明”中标明，不计为已通过。
+
 ## 1. 自动化与工程检查
 
 | 项目 | 结果 |
 |---|---|
 | Release 构建 | 0 warning / 0 error |
 | `dotnet format WhalePod.slnx --verify-no-changes` | 通过 |
-| 测试 | 23 单元 + 158 真实 PostgreSQL/HTTP 集成 + 1 E2E 占位，全部通过，0 跳过 |
+| 测试 | 38 单元 + 244 真实 PostgreSQL/HTTP 集成 + 1 真实 E2E 流程，共 283，全部通过，0 跳过（2026-10-28 整改后） |
 | EF 模型 | `has-pending-model-changes` 无待生成迁移；本地/测试库迁移 Up/Down 已验证 |
 | OpenAPI | 45 路径 / 53 操作 / 86 schema；YAML 解析与 Redocly recommended lint 通过，契约以 [openapi.yaml](../api/openapi.yaml) 为准 |
-| CI | Release 构建、格式、测试、PostgreSQL 18、TRX 跳过检查、Device CLI 三平台发布工作流 |
+| CI | Release 构建、格式、测试、PostgreSQL 18.6、TRX 0 跳过、NuGet 锁文件 `--locked-mode`、固定 SDK/Action 版本、容器镜像构建（Release）；Device CLI 三平台发布 |
 | 浏览器写路径 | 可弃数据库完成：发帖（含草稿清除）→ pending → 管理员通过 → 匿名可见；评论 → pending → 通过 → 匿名可见；2 条审核记录、4 条审计记录，无 JS 错误 |
 
 ## 2. UAT 结果
@@ -35,12 +37,12 @@
 | UAT-07 | 搜索与标签 | 通过 | `/search`、`/tags`、中文查询与不可见内容过滤；中文基线见 performance.md |
 | UAT-08 | 邮件通知 | 部分 | Logging 传输、outbox、偏好、退订与 Retry 有测试；真实 SMTP 投递/退信待外部凭据 |
 | UAT-09 | 备份恢复 | 通过（本机） | 开发库备份→独立库恢复，迁移/表计数/扩展/审计触发器核对；生产备份/异地副本待运维 |
-| UAT-10 | 移动端与键盘 | 通过（本地） | 320/375/390/768/1024/1280/1440 无页面横滚；axe 56 次扫描 + Release 终检 16 次均 0 违规；skip link、抽屉焦点陷阱、键盘走查通过；真实屏幕阅读器待人工 |
+| UAT-10 | 移动端与键盘 | 通过（本地，证据部分未留存） | 320/375/390/768/1024/1280/1440 无页面横滚；历史 axe 56 次扫描与 Release 终检 16 次的原始报告/命令未留存，本轮提供 `tests/browser/` 可复跑脚本与报告模板；skip link、抽屉焦点陷阱、键盘走查通过；真实屏幕阅读器待人工 |
 | UAT-11 | AI 建议低风险内容，人工通过 | 部分 | Agent API/建议/人工采纳 HTTP 流程通过；真实本地模型与 Q-02 待完成 |
 | UAT-12 | 人工驳回后申诉 | 通过 | 作者提交申诉、管理员恢复，内容回 approved，写 `appeal_result` 通知/邮件/审计 |
 | UAT-13 | AI 建议升级高风险/不确定内容 | 部分 | escalate 映射、队列优先级与人工裁决有测试；真实模型策略码待校准 |
 | UAT-14 | 提示注入与越权 | 部分 | 脱敏、最小 scope、实例归属、无管理端点有测试；独立对抗红队待补 |
-| UAT-15 | 腾讯云生产发布与回滚 | 未执行（外部） | 无预发/生产环境与凭据；上线清单见 production-readiness.md |
+| UAT-15 | 腾讯云生产发布与回滚 | 未执行（外部） | 无预发/生产环境与凭据；仓库已提供 `deploy/` 容器/Compose/迁移/备份/回滚 runbook 与 Release 镜像构建校验，云上演练待运维 |
 | UAT-16 | Agent 离线/本地模型超时 | 部分 | 租约回收/人工兜底有测试；真实断网与模型超时待演练 |
 | UAT-17 | 未批准的远程模型/运行位置 | 部分 | 心跳校验会暂停实例并审计；真实远程模型未接入 |
 | UAT-18 | MCP stdio 工具链 | 部分 | 7 工具 Schema/分发/断连释放与 `--print-tools` 通过；真实 MCP 客户端 + 模型 E2E 待补 |

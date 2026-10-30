@@ -15,6 +15,7 @@ public sealed class EmailOutbox
     public short Attempts { get; set; }
     public DateTimeOffset NextAttemptAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? LockedUntil { get; set; }
+    public Guid? LeaseToken { get; set; }
     public string? DedupeKey { get; set; }
     public string? LastErrorCode { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;

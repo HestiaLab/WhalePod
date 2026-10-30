@@ -76,6 +76,7 @@ public sealed class AcceptanceService(
         comment.UpdatedAt = now;
         post.AcceptedCommentId = comment.Id;
         post.IsSolved = true;
+        post.LastActivityAt = now;
         post.Version++;
         post.UpdatedAt = now;
 
@@ -166,6 +167,7 @@ public sealed class AcceptanceService(
         comment.UpdatedAt = now;
         post.AcceptedCommentId = null;
         post.IsSolved = false;
+        post.LastActivityAt = now;
         post.Version++;
         post.UpdatedAt = now;
 

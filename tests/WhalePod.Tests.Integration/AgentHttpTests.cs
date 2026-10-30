@@ -882,6 +882,500 @@ public sealed class AgentHttpTests(ApiHttpEnvironment environment)
             .FirstAsync();
     }
 
+    [DatabaseFact]
+    public async Task Concurrent_suggestions_respect_the_daily_task_budget()
+    {
+        await using var db = ServiceTestSupport.CreateContext();
+        var setup = await PrepareAsync(db, enableAi: true);
+        try
+        {
+            using var client = CreateClient();
+            var instanceId = await HeartbeatAsync(client, setup.Token);
+            var suffix = ServiceTestSupport.NewSuffix();
+            var secondPost = ServiceTestSupport.NewPost(
+                setup.Author.Id,
+                setup.Post.CategoryId,
+                ModerationStatuses.Pending,
+                title: $"并发任务预算标题 {suffix}",
+                body: "这是用于并发任务预算测试的正文，长度足够且需要人工裁决。");
+            db.Posts.Add(secondPost);
+            await db.SaveChangesAsync();
+            var firstTask = NewTaskFor(setup.Post);
+            var secondTask = NewTaskFor(secondPost);
+            db.ModerationTasks.AddRange(firstTask, secondTask);
+            await db.SaveChangesAsync();
+            var dayStart = new DateTimeOffset(DateTime.UtcNow.Date, TimeSpan.Zero);
+            var existingSuggestions = await db.ModerationSuggestions
+                .CountAsync(suggestion => suggestion.CreatedAt >= dayStart);
+            await SetAiBudgetsAsync(
+                db,
+                setup.Admin,
+                dailyTokenBudget: await CurrentTokenBudgetAsync(db) + 10_000,
+                dailyTaskBudget: existingSuggestions + 1,
+                dailyContentBudget: 1_000);
+
+            foreach (var task in new[] { firstTask, secondTask })
+            {
+                using var claim = await SendAsync(
+                    client,
+                    HttpMethod.Post,
+                    $"/api/v1/agent/moderation/tasks/{task.Id}/claim",
+                    setup.Token,
+                    instanceId,
+                    null);
+                Assert.Equal(HttpStatusCode.OK, claim.StatusCode);
+            }
+
+            var responses = await Task.WhenAll(
+                SendAsync(
+                    client,
+                    HttpMethod.Post,
+                    $"/api/v1/agent/moderation/tasks/{firstTask.Id}/suggestion",
+                    setup.Token,
+                    instanceId,
+                    NewSuggestionRequest(firstTask.Id, firstTask.ContentVersion, $"task-budget-a-{suffix}")),
+                SendAsync(
+                    client,
+                    HttpMethod.Post,
+                    $"/api/v1/agent/moderation/tasks/{secondTask.Id}/suggestion",
+                    setup.Token,
+                    instanceId,
+                    NewSuggestionRequest(secondTask.Id, secondTask.ContentVersion, $"task-budget-b-{suffix}")));
+            try
+            {
+                var statuses = responses.Select(response => response.StatusCode).ToList();
+                Assert.Equal(1, statuses.Count(status => status == HttpStatusCode.Created));
+                Assert.Equal(1, statuses.Count(status => status == HttpStatusCode.TooManyRequests));
+                db.ChangeTracker.Clear();
+                Assert.Equal(
+                    1,
+                    await db.ModerationSuggestions.CountAsync(suggestion =>
+                        suggestion.TaskId == firstTask.Id || suggestion.TaskId == secondTask.Id));
+            }
+            finally
+            {
+                foreach (var response in responses)
+                {
+                    response.Dispose();
+                }
+            }
+        }
+        finally
+        {
+            await DisableAiAsync(db, setup.Admin);
+        }
+    }
+
+    [DatabaseFact]
+    public async Task Content_budget_truncates_generation_without_blocking_claimed_tasks()
+    {
+        await using var db = ServiceTestSupport.CreateContext();
+        var setup = await PrepareAsync(db, enableAi: true);
+        try
+        {
+            using var client = CreateClient();
+            var instanceId = await HeartbeatAsync(client, setup.Token);
+            var suffix = ServiceTestSupport.NewSuffix();
+            var secondPost = ServiceTestSupport.NewPost(
+                setup.Author.Id,
+                setup.Post.CategoryId,
+                ModerationStatuses.Pending,
+                title: $"内容额度截断标题 {suffix}",
+                body: "这是用于内容额度截断测试的正文，长度足够且需要人工裁决。");
+            db.Posts.Add(secondPost);
+            await db.SaveChangesAsync();
+            var dayStart = new DateTimeOffset(DateTime.UtcNow.Date, TimeSpan.Zero);
+            var existingTasks = await db.ModerationTasks
+                .CountAsync(task => task.CreatedAt >= dayStart);
+            await SetAiBudgetsAsync(
+                db,
+                setup.Admin,
+                dailyTokenBudget: await CurrentTokenBudgetAsync(db) + 10_000,
+                dailyTaskBudget: 1_000,
+                dailyContentBudget: existingTasks + 1);
+
+            using (var list = await SendAsync(
+                       client,
+                       HttpMethod.Get,
+                       "/api/v1/agent/moderation/tasks?status=queued&limit=50",
+                       setup.Token,
+                       instanceId,
+                       null))
+            {
+                Assert.Equal(HttpStatusCode.OK, list.StatusCode);
+            }
+
+            db.ChangeTracker.Clear();
+            var createdTasks = await db.ModerationTasks
+                .AsNoTracking()
+                .Where(task => task.CreatedAt >= dayStart)
+                .ToListAsync();
+            Assert.Equal(existingTasks + 1, createdTasks.Count);
+            var task = createdTasks.OrderByDescending(candidate => candidate.CreatedAt)
+                .First();
+
+            using (var claim = await SendAsync(
+                       client,
+                       HttpMethod.Post,
+                       $"/api/v1/agent/moderation/tasks/{task.Id}/claim",
+                       setup.Token,
+                       instanceId,
+                       null))
+            {
+                Assert.Equal(HttpStatusCode.OK, claim.StatusCode);
+            }
+
+            using (var suggestion = await SendAsync(
+                       client,
+                       HttpMethod.Post,
+                       $"/api/v1/agent/moderation/tasks/{task.Id}/suggestion",
+                       setup.Token,
+                       instanceId,
+                       NewSuggestionRequest(task.Id, task.ContentVersion, $"content-budget-{suffix}")))
+            {
+                Assert.Equal(HttpStatusCode.Created, suggestion.StatusCode);
+            }
+        }
+        finally
+        {
+            await DisableAiAsync(db, setup.Admin);
+        }
+    }
+
+    [DatabaseFact]
+    public async Task Old_release_cannot_clear_a_new_lease_or_terminal_status()
+    {
+        await using var db = ServiceTestSupport.CreateContext();
+        var setup = await PrepareAsync(db, enableAi: true);
+        try
+        {
+            using var client = CreateClient();
+            var firstInstance = await HeartbeatAsync(client, setup.Token);
+            var secondInstance = await HeartbeatAsync(client, setup.Token);
+            var task = NewTaskFor(setup.Post);
+            db.ModerationTasks.Add(task);
+            await db.SaveChangesAsync();
+
+            using (var firstClaim = await SendAsync(
+                       client,
+                       HttpMethod.Post,
+                       $"/api/v1/agent/moderation/tasks/{task.Id}/claim",
+                       setup.Token,
+                       firstInstance,
+                       null))
+            {
+                Assert.Equal(HttpStatusCode.OK, firstClaim.StatusCode);
+            }
+
+            db.ChangeTracker.Clear();
+            var stored = await db.ModerationTasks.SingleAsync(candidate => candidate.Id == task.Id);
+            stored.ClaimedAt = DateTimeOffset.UtcNow.AddMinutes(-3);
+            stored.LeaseExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+            await db.SaveChangesAsync();
+
+            using (var secondClaim = await SendAsync(
+                       client,
+                       HttpMethod.Post,
+                       $"/api/v1/agent/moderation/tasks/{task.Id}/claim",
+                       setup.Token,
+                       secondInstance,
+                       null))
+            {
+                Assert.Equal(HttpStatusCode.OK, secondClaim.StatusCode);
+            }
+
+            using (var staleRelease = await SendAsync(
+                       client,
+                       HttpMethod.Post,
+                       $"/api/v1/agent/moderation/tasks/{task.Id}/release",
+                       setup.Token,
+                       firstInstance,
+                       new { reason = "旧实例释放" }))
+            {
+                Assert.Equal(HttpStatusCode.Conflict, staleRelease.StatusCode);
+                Assert.Equal(ApiErrorCodes.TaskLeaseExpired, await ReadCodeAsync(staleRelease));
+            }
+
+            db.ChangeTracker.Clear();
+            var afterRelease = await db.ModerationTasks.AsNoTracking()
+                .SingleAsync(candidate => candidate.Id == task.Id);
+            Assert.Equal(ModerationTaskStatuses.Claimed, afterRelease.Status);
+            Assert.Equal(Guid.Parse(secondInstance), afterRelease.ClaimedByAgentInstanceId);
+
+            using (var suggestion = await SendAsync(
+                       client,
+                       HttpMethod.Post,
+                       $"/api/v1/agent/moderation/tasks/{task.Id}/suggestion",
+                       setup.Token,
+                       secondInstance,
+                       NewSuggestionRequest(task.Id, task.ContentVersion, $"lease-fence-{ServiceTestSupport.NewSuffix()}")))
+            {
+                Assert.Equal(HttpStatusCode.Created, suggestion.StatusCode);
+            }
+
+            using (var terminalRelease = await SendAsync(
+                       client,
+                       HttpMethod.Post,
+                       $"/api/v1/agent/moderation/tasks/{task.Id}/release",
+                       setup.Token,
+                       secondInstance,
+                       new { reason = "终态释放" }))
+            {
+                Assert.Equal(HttpStatusCode.Conflict, terminalRelease.StatusCode);
+            }
+
+            db.ChangeTracker.Clear();
+            Assert.Equal(
+                ModerationTaskStatuses.Suggested,
+                (await db.ModerationTasks.AsNoTracking()
+                    .SingleAsync(candidate => candidate.Id == task.Id)).Status);
+        }
+        finally
+        {
+            await DisableAiAsync(db, setup.Admin);
+        }
+    }
+
+    [DatabaseFact]
+    public async Task Task_cursor_preserves_sub_millisecond_created_at()
+    {
+        await using var db = ServiceTestSupport.CreateContext();
+        var setup = await PrepareAsync(db, enableAi: true);
+        try
+        {
+            using var client = CreateClient();
+            var instanceId = await HeartbeatAsync(client, setup.Token);
+            var suffix = ServiceTestSupport.NewSuffix();
+            var secondPost = ServiceTestSupport.NewPost(
+                setup.Author.Id,
+                setup.Post.CategoryId,
+                ModerationStatuses.Pending,
+                title: $"游标精度标题 {suffix}",
+                body: "这是用于游标精度测试的正文，长度足够且需要人工裁决。");
+            db.Posts.Add(secondPost);
+            await db.SaveChangesAsync();
+
+            using (var list = await SendAsync(
+                       client,
+                       HttpMethod.Get,
+                       "/api/v1/agent/moderation/tasks?status=queued&limit=50",
+                       setup.Token,
+                       instanceId,
+                       null))
+            {
+                Assert.Equal(HttpStatusCode.OK, list.StatusCode);
+            }
+
+            db.ChangeTracker.Clear();
+            var tasks = await db.ModerationTasks
+                .Where(task => task.TargetId == setup.Post.Id || task.TargetId == secondPost.Id)
+                .OrderBy(task => task.Id)
+                .ToListAsync();
+            Assert.Equal(2, tasks.Count);
+            var baseTime = new DateTimeOffset(DateTime.UtcNow.Date.AddHours(2), TimeSpan.Zero);
+            tasks[0].CreatedAt = baseTime.AddTicks(10);
+            tasks[1].CreatedAt = baseTime.AddTicks(20);
+            tasks[0].Priority = 20;
+            tasks[1].Priority = 20;
+            await db.SaveChangesAsync();
+
+            var seen = new List<Guid>();
+            string? cursor = null;
+            for (var page = 0; page < 2; page++)
+            {
+                var path = "/api/v1/agent/moderation/tasks?status=queued&limit=1"
+                    + (cursor is null ? string.Empty : $"&cursor={Uri.EscapeDataString(cursor)}");
+                using var response = await SendAsync(
+                    client,
+                    HttpMethod.Get,
+                    path,
+                    setup.Token,
+                    instanceId,
+                    null);
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                var data = document.RootElement.GetProperty("data");
+                var item = Assert.Single(data.GetProperty("items").EnumerateArray());
+                seen.Add(item.GetProperty("id").GetGuid());
+                cursor = data.GetProperty("nextCursor").GetString();
+                if (page == 1)
+                {
+                    Assert.Null(cursor);
+                }
+            }
+
+            Assert.Equal(2, seen.Distinct().Count());
+        }
+        finally
+        {
+            await DisableAiAsync(db, setup.Admin);
+        }
+    }
+
+    [DatabaseFact]
+    public async Task Agent_task_detail_redacts_artifact_names()
+    {
+        await using var db = ServiceTestSupport.CreateContext();
+        var setup = await PrepareAsync(db, enableAi: true);
+        try
+        {
+            using var client = CreateClient();
+            var instanceId = await HeartbeatAsync(client, setup.Token);
+            db.Artifacts.Add(new Artifact
+            {
+                PostId = setup.Post.Id,
+                Kind = ArtifactKinds.Markdown,
+                Name = "联系 user@example.com",
+                Note = "备用邮箱 user@example.com",
+                Content = "运行说明，无敏感信息。"
+            });
+            var task = NewTaskFor(setup.Post);
+            db.ModerationTasks.Add(task);
+            await db.SaveChangesAsync();
+
+            using var get = await SendAsync(
+                client,
+                HttpMethod.Get,
+                $"/api/v1/agent/moderation/tasks/{task.Id}",
+                setup.Token,
+                instanceId,
+                null);
+            Assert.Equal(HttpStatusCode.OK, get.StatusCode);
+            var body = await get.Content.ReadAsStringAsync();
+            Assert.Contains("[REDACTED:email]", body);
+            Assert.DoesNotContain("user@example.com", body);
+        }
+        finally
+        {
+            await DisableAiAsync(db, setup.Admin);
+        }
+    }
+
+    [DatabaseFact]
+    public async Task Invalid_json_counts_toward_the_failure_circuit()
+    {
+        await using var db = ServiceTestSupport.CreateContext();
+        var setup = await PrepareAsync(db, enableAi: true);
+        ModerationTask? task = null;
+        try
+        {
+            using var client = CreateClient();
+            var instanceId = await HeartbeatAsync(client, setup.Token);
+            task = NewTaskFor(setup.Post);
+            db.ModerationTasks.Add(task);
+            await db.SaveChangesAsync();
+
+            for (var index = 0; index < AiBudgetService.FailureThreshold; index++)
+            {
+                using var invalid = await SendRawAsync(
+                    client,
+                    HttpMethod.Post,
+                    $"/api/v1/agent/moderation/tasks/{task.Id}/suggestion",
+                    setup.Token,
+                    instanceId,
+                    "{not-json");
+                Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+            }
+
+            db.ChangeTracker.Clear();
+            var failureMetadata = await db.AuditLogs
+                .AsNoTracking()
+                .Where(log => log.Action == AiBudgetService.SuggestionFailedAction
+                    && log.TargetId == task.Id)
+                .Select(log => log.MetadataJson)
+                .ToListAsync();
+            Assert.Equal(
+                AiBudgetService.FailureThreshold,
+                failureMetadata.Count(metadata =>
+                    metadata.RootElement.GetProperty("code").GetString()
+                        == ApiErrorCodes.ValidationFailed));
+
+            using var blocked = await SendAsync(
+                client,
+                HttpMethod.Post,
+                $"/api/v1/agent/moderation/tasks/{task.Id}/claim",
+                setup.Token,
+                instanceId,
+                null);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, blocked.StatusCode);
+            Assert.Equal(ApiErrorCodes.AgentDisabled, await ReadCodeAsync(blocked));
+        }
+        finally
+        {
+            await DisableAiAsync(db, setup.Admin);
+        }
+    }
+
+    private static ModerationTask NewTaskFor(Post post)
+    {
+        return new ModerationTask
+        {
+            TargetType = ModerationTargetTypes.Post,
+            TargetId = post.Id,
+            ContentVersion = post.Version,
+            ContentHash = AgentContentHash.ForPost(post),
+            Status = ModerationTaskStatuses.Queued,
+            Priority = 10
+        };
+    }
+
+    private static async Task<int> CurrentTokenBudgetAsync(WhalePodDbContext db)
+    {
+        var settings = new AiSettingsService(db, new AdminAccessService(db), TimeProvider.System);
+        var budget = new AiBudgetService(
+            db,
+            settings,
+            TimeProvider.System,
+            NullLogger<AiBudgetService>.Instance);
+        var status = await budget.GetAsync();
+        return (int)Math.Min(1_000_000_000, status.UsedTokensToday);
+    }
+
+    private static async Task SetAiBudgetsAsync(
+        WhalePodDbContext db,
+        User admin,
+        int dailyTokenBudget,
+        int dailyTaskBudget,
+        int dailyContentBudget)
+    {
+        var settings = new AiSettingsService(db, new AdminAccessService(db), TimeProvider.System);
+        var result = await settings.UpdateAsync(
+            enabled: true,
+            suggestionsPaused: false,
+            approvedModels: [new ApprovedModel(ModelName, ModelVersion, ModelQuantization)],
+            dailyTokenBudget: dailyTokenBudget,
+            dailyTaskBudget: dailyTaskBudget,
+            dailyContentBudget: dailyContentBudget,
+            confirmEnable: true,
+            audit: ServiceTestSupport.NewAudit(admin.Id));
+        Assert.True(result.Outcome is AiSettingsOutcome.Success or AiSettingsOutcome.Unchanged);
+    }
+
+    private static async Task<HttpResponseMessage> SendRawAsync(
+        HttpClient client,
+        HttpMethod method,
+        string path,
+        string? token,
+        string? instanceId,
+        string body)
+    {
+        var request = new HttpRequestMessage(method, path)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json")
+        };
+        if (token is not null)
+        {
+            request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {token}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(instanceId))
+        {
+            request.Headers.Add("X-Agent-Instance-Id", instanceId);
+        }
+
+        return await client.SendAsync(request);
+    }
+
     private static object NewSuggestionRequest(Guid taskId, int contentVersion, string idempotencyKey)
     {
         _ = taskId;
@@ -1048,6 +1542,15 @@ public sealed class AgentHttpTests(ApiHttpEnvironment environment)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(task => task.Status, ModerationTaskStatuses.Expired)
                 .SetProperty(task => task.CompletedAt, now));
+        db.AuditLogs.Add(new AuditLog
+        {
+            ActorType = AuditActorTypes.System,
+            Action = AiBudgetService.SuggestionSubmittedAction,
+            TargetType = "agent_test",
+            MetadataJson = JsonSerializer.SerializeToDocument(new { reason = "reset_failure_window" }),
+            CreatedAt = now
+        });
+        await db.SaveChangesAsync();
 
         var suffix = ServiceTestSupport.NewSuffix();
         var admin = ServiceTestSupport.NewUser("agent-admin", UserRoles.Admin);

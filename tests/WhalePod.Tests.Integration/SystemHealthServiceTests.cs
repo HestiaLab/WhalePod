@@ -16,18 +16,63 @@ namespace WhalePod.Tests.Integration;
 
 public sealed class SystemHealthServiceTests
 {
-    private static string ConnectionString =>
-        Environment.GetEnvironmentVariable("WHALEPOD_TEST_DB_CONNECTION")
-        ?? throw new InvalidOperationException("WHALEPOD_TEST_DB_CONNECTION is required.");
+    private static WhalePodDbContext CreateContext() => ServiceTestSupport.CreateContext();
 
-    private static WhalePodDbContext CreateContext()
+    [DatabaseFact]
+    public async Task Health_warns_when_backup_is_stale_and_survives_invalid_status_file()
     {
-        var options = new DbContextOptionsBuilder<WhalePodDbContext>()
-            .UseNpgsql(ConnectionString)
-            .UseSnakeCaseNamingConvention()
-            .Options;
+        await using var db = CreateContext();
+        await db.Database.MigrateAsync();
+        var path = Path.Combine(
+            Path.GetTempPath(),
+            $"whalepod-health-backup-{Guid.NewGuid():N}.json");
+        try
+        {
+            await File.WriteAllTextAsync(
+                path,
+                $$"""{"lastSuccessUtc":"{{DateTimeOffset.UtcNow.AddHours(-48):O}}","database":"whalepod","bytes":1}""");
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Operations:Backup:StatusFilePath"] = path
+                })
+                .Build();
+            var aiSettings = new AiSettingsService(db, new AdminAccessService(db), TimeProvider.System);
+            var service = new SystemHealthService(
+                db,
+                aiSettings,
+                new AiBudgetService(
+                    db,
+                    aiSettings,
+                    TimeProvider.System,
+                    NullLogger<AiBudgetService>.Instance),
+                Options.Create(new RetentionOptions()),
+                Options.Create(new HealthOptions()),
+                Options.Create(new MediaStorageOptions { Provider = MediaStorageProviders.Local }),
+                new BackupStatusProvider(
+                    configuration,
+                    NullLogger<BackupStatusProvider>.Instance),
+                TimeProvider.System,
+                NullLogger<SystemHealthService>.Instance);
 
-        return new WhalePodDbContext(options);
+            var stale = await service.GetAsync();
+            Assert.True(stale.DatabaseReachable);
+            Assert.NotNull(stale.LastBackupAt);
+            Assert.True(stale.LastBackupAt < DateTimeOffset.UtcNow.AddHours(-47));
+            Assert.Contains(stale.Warnings, warning => warning.Contains("超过 24 小时", StringComparison.Ordinal));
+
+            await File.WriteAllTextAsync(path, "[1,2,3]");
+            var invalid = await service.GetAsync();
+            Assert.True(invalid.DatabaseReachable);
+            Assert.Null(invalid.LastBackupAt);
+            Assert.DoesNotContain(
+                invalid.Warnings,
+                warning => warning.Contains("数据库不可达", StringComparison.Ordinal));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [DatabaseFact]

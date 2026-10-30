@@ -185,7 +185,7 @@ else if (Query.Length == 0)
                 Cursor,
                 timeout.Token);
         }
-        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
             ErrorMessage = $"搜索超时（>{timeoutSeconds} 秒）。请缩短关键词、增加限定词后重试。";
             return;

@@ -6,6 +6,11 @@
     <ProjectReference Include="..\WhalePod.Infrastructure\WhalePod.Infrastructure.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Pin the SDK's implicit static-web-assets pack so lock files are portable across SDK installs. -->
+    <PackageReference Include="Microsoft.AspNetCore.App.Internal.Assets" Version="10.0.14" PrivateAssets="all" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>

@@ -1,0 +1,304 @@
+@page "/posts/{PostId:guid}/edit"
+@layout MainLayout
+@attribute [Authorize]
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Antiforgery
+@using WhalePod.Infrastructure.Services
+@using WhalePod.Web.Services
+@inject PublicContentService PublicContent
+@inject AdminAccessService AdminAccess
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+<SeoHead Title="编辑实测 - WhalePod（鲸群）" Description="修改帖子并重新提交审核。" NoIndex="true" />
+
+@if (Post is null)
+{
+    <div class="empty-state empty-state-illustrated">
+        <p class="eyebrow">SIGNAL LOST</p>
+        <h1>无法编辑</h1>
+        <p>帖子不存在、已删除，或当前账号没有编辑权限。</p>
+        <div class="empty-state-actions">
+            <a class="button" href="/">返回信息流</a>
+        </div>
+    </div>
+}
+else
+{
+    <header class="page-masthead editor-masthead">
+        <p class="masthead-kicker">编辑实测</p>
+        <h1>编辑帖子</h1>
+        <p class="masthead-lead">
+            作者编辑后会重新进入人工审核；管理员编辑他人帖子不会自动重审。正文使用 Markdown，禁止原始 HTML。
+        </p>
+        <div class="masthead-meta">
+            <span>当前版本 v@(Post.Version)</span>
+            <a href="/posts/@Post.Id">返回帖子</a>
+        </div>
+    </header>
+
+    @if (Post.ModerationStatus != "approved")
+    {
+        <div class="alert alert-warning">
+            <strong>当前内容状态：@StatusLabel(Post.ModerationStatus)</strong>
+            @if (!string.IsNullOrWhiteSpace(Post.LatestModerationReason))
+            {
+                <p>最近审核理由：@Post.LatestModerationReason</p>
+            }
+            @if (Post.LatestModerationAt is not null)
+            {
+                <p>审核时间：@DisplayFormat.Time(Post.LatestModerationAt.Value)</p>
+            }
+            <p>修改并保存后会重新提交审核，通过前仅作者与管理员可见。</p>
+        </div>
+    }
+
+    @if (ErrorMessage is not null)
+    {
+        <p class="alert alert-error" role="alert">@ErrorMessage</p>
+    }
+
+    <form id="editor-form" class="editor-form" data-editor-form method="post" action="/posts/@Post.Id/edit/submit">
+        <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+        <input type="hidden" name="version" value="@Post.Version" />
+        <input type="hidden" name="originalCategoryId" value="@Post.Category.Id" />
+
+        <div class="editor-grid">
+            <div class="editor-main">
+                <section class="editor-panel" aria-labelledby="editor-title-heading">
+                    <div class="editor-panel-head">
+                        <h2 id="editor-title-heading">标题与板块</h2>
+                    </div>
+                    <p>
+                        <label for="editor-title">标题（8-200 字）</label>
+                        <input id="editor-title" name="title" minlength="8" maxlength="200" required
+                               value="@Post.Title" />
+                    </p>
+                    <p>
+                        <label for="editor-category">板块</label>
+                        <select id="editor-category" name="categoryId" required>
+                            @if (!Categories.Any(category => category.Id == Post.Category.Id))
+                            {
+                                <option value="@Post.Category.Id" selected>@Post.Category.Name（当前板块不可用）</option>
+                            }
+                            @foreach (var category in Categories)
+                            {
+                                <option value="@category.Id" selected="@(category.Id == Post.Category.Id)">@category.Name</option>
+                            }
+                        </select>
+                    </p>
+                </section>
+
+                <section class="editor-panel" aria-labelledby="editor-content-heading">
+                    <div class="editor-panel-head">
+                        <h2 id="editor-content-heading">正文</h2>
+                        <button type="button" id="editor-preview-toggle" class="button-secondary button-compact"
+                                aria-controls="editor-preview" aria-expanded="false">预览</button>
+                    </div>
+                    <p id="editor-preview-status" class="muted editor-preview-status" role="status" aria-live="polite"></p>
+                    <div id="editor-body-block">
+                        <label for="editor-body">正文（Markdown，10-60,000 字）</label>
+                        <textarea id="editor-body" name="bodyMd" rows="16" minlength="10" maxlength="60000" required>@Post.BodyMd</textarea>
+                    </div>
+                    <div id="editor-preview" class="editor-preview" aria-label="正文预览" hidden></div>
+                </section>
+            </div>
+
+            <aside class="editor-side" aria-label="发布设置">
+                <fieldset class="editor-panel">
+                    <legend>环境信息（可选）</legend>
+                    <div class="form-grid">
+                        <p>
+                            <label for="editor-kernel">内核</label>
+                            <input id="editor-kernel" name="kernel" maxlength="64" value="@Post.Environment.KernelVersion" />
+                        </p>
+                        <p>
+                            <label for="editor-platform">平台</label>
+                            <select id="editor-platform" name="platform">
+                                <option value="">未填写</option>
+                                @foreach (var platform in Platforms)
+                                {
+                                    <option value="@platform" selected="@(platform == Post.Environment.Platform)">@platform</option>
+                                }
+                            </select>
+                        </p>
+                        <p>
+                            <label for="editor-model">模型</label>
+                            <input id="editor-model" name="model" maxlength="100" value="@Post.Environment.Model" />
+                        </p>
+                    </div>
+                </fieldset>
+
+                <fieldset class="editor-panel">
+                    <legend>标签（最多 6 个）</legend>
+                    @if (SelectableTags.Count == 0)
+                    {
+                        <p class="muted">当前没有可用标签。</p>
+                    }
+                    else
+                    {
+                        <div class="tag-choices">
+                            @foreach (var tag in SelectableTags)
+                            {
+                                <label class="tag-choice">
+                                    <input type="checkbox" name="tags" value="@tag.Slug"
+                                           checked="@(Post.Tags.Any(selected => selected.Slug == tag.Slug))" />
+                                    @tag.Name
+                                </label>
+                            }
+                        </div>
+                    }
+                </fieldset>
+
+                @if (IsAdmin && Post.Author.Id != ViewerId)
+                {
+                    <fieldset class="editor-panel">
+                        <legend>管理员编辑原因</legend>
+                        <p>
+                            <label for="editor-reason">原因（必填，最多 500 字）</label>
+                            <input id="editor-reason" name="reason" maxlength="500" required />
+                        </p>
+                    </fieldset>
+                }
+
+                @if (Post.Images.Count > 0)
+                {
+                    <fieldset class="editor-panel">
+                        <legend>帖子图片（保持不变的只读列表）</legend>
+                        <ul class="editor-image-list">
+                            @foreach (var image in Post.Images)
+                            {
+                                <li>
+                                    <img src="@image.Url" alt="@image.AltText" width="96" height="96" loading="lazy" />
+                                    <span>@(string.IsNullOrWhiteSpace(image.AltText) ? "无替代文本" : image.AltText)</span>
+                                </li>
+                            }
+                        </ul>
+                        <p class="muted">图片编辑与删除将在后续版本提供；本次保存不会改动图片。</p>
+                    </fieldset>
+                }
+
+                @if (Post.Artifacts.Count > 0)
+                {
+                    <fieldset class="editor-panel">
+                        <legend>产物（保持不变的只读列表）</legend>
+                        <ul>
+                            @foreach (var artifact in Post.Artifacts)
+                            {
+                                <li><strong>@artifact.Name</strong> · @artifact.Kind</li>
+                            }
+                        </ul>
+                        <p class="muted">产物编辑与多产物管理将在后续版本提供；本次保存不会改动产物。</p>
+                    </fieldset>
+                }
+            </aside>
+        </div>
+
+        <div class="editor-actions">
+            <div>
+                <p class="muted">保存后文章会进入待审核状态（管理员编辑他人帖子除外）。</p>
+            </div>
+            <div class="editor-actions-buttons">
+                <button type="submit">保存并提交审核</button>
+                <a class="button button-secondary" href="/posts/@Post.Id">取消</a>
+            </div>
+        </div>
+    </form>
+}
+
+@code {
+    [Parameter]
+    public Guid PostId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "error")]
+    public string? Error { get; set; }
+
+    [SupplyParameterFromQuery(Name = "field")]
+    public string? Field { get; set; }
+
+    private static readonly string[] Platforms =
+    [
+        "win32-x64",
+        "win32-arm64",
+        "darwin-x64",
+        "darwin-arm64",
+        "linux-x64",
+        "linux-arm64"
+    ];
+
+    private PostDetailView? Post { get; set; }
+    private IReadOnlyList<CategoryView> Categories { get; set; } = [];
+    private IReadOnlyList<TagView> Tags { get; set; } = [];
+    private string Token { get; set; } = string.Empty;
+    private Guid ViewerId { get; set; }
+    private bool IsAdmin { get; set; }
+
+    private IReadOnlyList<TagSummaryView> SelectableTags
+    {
+        get
+        {
+            var tags = Tags
+                .Select(tag => new TagSummaryView(tag.Slug, tag.Name))
+                .ToList();
+            foreach (var tag in Post?.Tags ?? [])
+            {
+                if (!tags.Any(known => known.Slug == tag.Slug))
+                {
+                    tags.Add(tag);
+                }
+            }
+
+            return tags;
+        }
+    }
+
+    private string? ErrorMessage => Error switch
+    {
+        "validation" => $"提交内容不符合要求（字段：{Field ?? "未知"}），请检查后重试。",
+        "conflict" => "帖子已被其他操作修改，请刷新后重新编辑。",
+        "muted" => "账号处于禁言状态，不能编辑帖子。",
+        "banned" => "账号已被封禁，不能编辑帖子。",
+        "auth" => "请先登录并激活账号。",
+        "forbidden" => "当前账号没有编辑该帖子的权限。",
+        _ => null
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var http = HttpContextAccessor.HttpContext
+            ?? throw new InvalidOperationException("HttpContext is unavailable.");
+        if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var viewerId))
+        {
+            StatusCodeResponse.Defer(http, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        ViewerId = viewerId;
+        IsAdmin = await AdminAccess.IsAdminAsync(viewerId);
+        Post = await PublicContent.GetPostForViewerAsync(PostId, viewerId, IsAdmin);
+        if (Post is null || (!IsAdmin && Post.Author.Id != viewerId))
+        {
+            Post = null;
+            StatusCodeResponse.Defer(http, StatusCodes.Status404NotFound);
+            return;
+        }
+
+        Token = Antiforgery.GetAndStoreTokens(http).RequestToken
+            ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+        Categories = await PublicContent.GetCategoriesAsync();
+        var tagPage = await PublicContent.GetTagsAsync(50, null);
+        Tags = tagPage.Items;
+    }
+
+    private static string StatusLabel(string status)
+    {
+        return status switch
+        {
+            "pending" => "待审核",
+            "rejected" => "已驳回",
+            "hidden" => "已隐藏",
+            "deleted" => "已删除",
+            _ => status
+        };
+    }
+}

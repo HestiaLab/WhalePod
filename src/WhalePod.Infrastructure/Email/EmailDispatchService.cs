@@ -25,6 +25,7 @@ public sealed class EmailDispatchService(
 
     public async Task<EmailDispatchResult> ProcessOnceAsync(CancellationToken cancellationToken = default)
     {
+        db.ChangeTracker.Clear();
         await RecoverExpiredLeasesAsync(cancellationToken);
         var claimed = await ClaimDueAsync(cancellationToken);
         var sent = 0;
@@ -35,11 +36,25 @@ public sealed class EmailDispatchService(
         foreach (var email in claimed)
         {
             var now = timeProvider.GetUtcNow();
+            if (email.LeaseToken is not Guid leaseToken)
+            {
+                continue;
+            }
+
             if (email.Attempts > Math.Max(1, _options.MaxAttempts))
             {
-                MarkFailed(email, "max_attempts");
-                await db.SaveChangesAsync(cancellationToken);
-                failed++;
+                if (await SettleAsync(
+                        email,
+                        leaseToken,
+                        EmailStatuses.Failed,
+                        null,
+                        null,
+                        "max_attempts",
+                        cancellationToken))
+                {
+                    failed++;
+                }
+
                 continue;
             }
 
@@ -48,18 +63,36 @@ public sealed class EmailDispatchService(
                 .AnyAsync(candidate => candidate.EmailHash == addressHasher.Hash(email.ToAddress), cancellationToken);
             if (suppression)
             {
-                MarkSuppressed(email, "suppressed");
-                await db.SaveChangesAsync(cancellationToken);
-                suppressed++;
+                if (await SettleAsync(
+                        email,
+                        leaseToken,
+                        EmailStatuses.Suppressed,
+                        null,
+                        null,
+                        "suppressed",
+                        cancellationToken))
+                {
+                    suppressed++;
+                }
+
                 continue;
             }
 
             var preferenceType = EmailPreferencePolicy.ForNotificationType(email.Template);
             if (preferenceType is null)
             {
-                MarkFailed(email, "template_invalid");
-                await db.SaveChangesAsync(cancellationToken);
-                failed++;
+                if (await SettleAsync(
+                        email,
+                        leaseToken,
+                        EmailStatuses.Failed,
+                        null,
+                        null,
+                        "template_invalid",
+                        cancellationToken))
+                {
+                    failed++;
+                }
+
                 continue;
             }
 
@@ -67,9 +100,18 @@ public sealed class EmailDispatchService(
             {
                 if (email.UserId is not Guid userId)
                 {
-                    MarkSuppressed(email, "recipient_missing");
-                    await db.SaveChangesAsync(cancellationToken);
-                    suppressed++;
+                    if (await SettleAsync(
+                            email,
+                            leaseToken,
+                            EmailStatuses.Suppressed,
+                            null,
+                            null,
+                            "recipient_missing",
+                            cancellationToken))
+                    {
+                        suppressed++;
+                    }
+
                     continue;
                 }
 
@@ -80,9 +122,18 @@ public sealed class EmailDispatchService(
                     .SingleOrDefaultAsync(cancellationToken);
                 if (user is null || user.DeletedAt is not null)
                 {
-                    MarkSuppressed(email, "recipient_inactive");
-                    await db.SaveChangesAsync(cancellationToken);
-                    suppressed++;
+                    if (await SettleAsync(
+                            email,
+                            leaseToken,
+                            EmailStatuses.Suppressed,
+                            null,
+                            null,
+                            "recipient_inactive",
+                            cancellationToken))
+                    {
+                        suppressed++;
+                    }
+
                     continue;
                 }
 
@@ -93,9 +144,18 @@ public sealed class EmailDispatchService(
                     .SingleOrDefaultAsync(cancellationToken);
                 if (enabled == false)
                 {
-                    MarkSuppressed(email, "preference_disabled");
-                    await db.SaveChangesAsync(cancellationToken);
-                    suppressed++;
+                    if (await SettleAsync(
+                            email,
+                            leaseToken,
+                            EmailStatuses.Suppressed,
+                            null,
+                            null,
+                            "preference_disabled",
+                            cancellationToken))
+                    {
+                        suppressed++;
+                    }
+
                     continue;
                 }
             }
@@ -112,9 +172,18 @@ public sealed class EmailDispatchService(
                 logger.LogWarning(
                     "Email {EmailOutboxId} has an invalid template payload.",
                     email.Id);
-                MarkFailed(email, "template_invalid");
-                await db.SaveChangesAsync(cancellationToken);
-                failed++;
+                if (await SettleAsync(
+                        email,
+                        leaseToken,
+                        EmailStatuses.Failed,
+                        null,
+                        null,
+                        "template_invalid",
+                        cancellationToken))
+                {
+                    failed++;
+                }
+
                 continue;
             }
 
@@ -141,36 +210,64 @@ public sealed class EmailDispatchService(
             switch (result.Outcome)
             {
                 case EmailSendOutcome.Sent:
-                    email.Status = EmailStatuses.Sent;
-                    email.SentAt = now;
-                    email.LockedUntil = null;
-                    email.LastErrorCode = null;
-                    sent++;
+                    if (await SettleAsync(
+                            email,
+                            leaseToken,
+                            EmailStatuses.Sent,
+                            now,
+                            null,
+                            null,
+                            cancellationToken))
+                    {
+                        sent++;
+                    }
+
                     break;
                 case EmailSendOutcome.HardBounce:
                     await SuppressAsync(email.ToAddress, EmailSuppressionReasons.HardBounce, now, cancellationToken);
-                    MarkSuppressed(email, result.ErrorCode ?? "hard_bounce");
-                    suppressed++;
+                    await db.SaveChangesAsync(cancellationToken);
+                    if (await SettleAsync(
+                            email,
+                            leaseToken,
+                            EmailStatuses.Suppressed,
+                            null,
+                            null,
+                            result.ErrorCode ?? "hard_bounce",
+                            cancellationToken))
+                    {
+                        suppressed++;
+                    }
+
                     break;
                 default:
-                    email.LockedUntil = null;
-                    email.LastErrorCode = result.ErrorCode ?? "transient";
                     if (email.Attempts >= Math.Max(1, _options.MaxAttempts))
                     {
-                        email.Status = EmailStatuses.Failed;
-                        failed++;
+                        if (await SettleAsync(
+                                email,
+                                leaseToken,
+                                EmailStatuses.Failed,
+                                null,
+                                null,
+                                result.ErrorCode ?? "transient",
+                                cancellationToken))
+                        {
+                            failed++;
+                        }
                     }
-                    else
+                    else if (await SettleAsync(
+                                 email,
+                                 leaseToken,
+                                 EmailStatuses.Pending,
+                                 null,
+                                 now.Add(CalculateBackoff(email.Attempts)),
+                                 result.ErrorCode ?? "transient",
+                                 cancellationToken))
                     {
-                        email.Status = EmailStatuses.Pending;
-                        email.NextAttemptAt = now.Add(CalculateBackoff(email.Attempts));
                         retried++;
                     }
 
                     break;
             }
-
-            await db.SaveChangesAsync(cancellationToken);
         }
 
         logger.LogInformation(
@@ -192,6 +289,7 @@ public sealed class EmailDispatchService(
                 setters => setters
                     .SetProperty(email => email.Status, EmailStatuses.Pending)
                     .SetProperty(email => email.LockedUntil, (DateTimeOffset?)null)
+                    .SetProperty(email => email.LeaseToken, (Guid?)null)
                     .SetProperty(email => email.NextAttemptAt, now),
                 cancellationToken);
     }
@@ -216,6 +314,7 @@ public sealed class EmailDispatchService(
             email.Status = EmailStatuses.Sending;
             email.Attempts++;
             email.LockedUntil = now.Add(lease);
+            email.LeaseToken = Guid.NewGuid();
         }
 
         await db.SaveChangesAsync(cancellationToken);
@@ -249,18 +348,36 @@ public sealed class EmailDispatchService(
         }
     }
 
-    private static void MarkSuppressed(EmailOutbox email, string errorCode)
+    private async Task<bool> SettleAsync(
+        EmailOutbox email,
+        Guid leaseToken,
+        string status,
+        DateTimeOffset? sentAt,
+        DateTimeOffset? nextAttemptAt,
+        string? errorCode,
+        CancellationToken cancellationToken)
     {
-        email.Status = EmailStatuses.Suppressed;
-        email.LockedUntil = null;
-        email.LastErrorCode = errorCode;
-    }
+        var updated = await db.EmailOutbox
+            .Where(row => row.Id == email.Id
+                && row.Status == EmailStatuses.Sending
+                && row.LeaseToken == leaseToken)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(row => row.Status, status)
+                    .SetProperty(row => row.SentAt, sentAt)
+                    .SetProperty(row => row.NextAttemptAt, row => nextAttemptAt ?? row.NextAttemptAt)
+                    .SetProperty(row => row.LockedUntil, (DateTimeOffset?)null)
+                    .SetProperty(row => row.LastErrorCode, errorCode)
+                    .SetProperty(row => row.LeaseToken, (Guid?)null),
+                cancellationToken);
+        if (updated == 0)
+        {
+            logger.LogWarning(
+                "Email {EmailOutboxId} lease was lost before settling; result discarded.",
+                email.Id);
+        }
 
-    private static void MarkFailed(EmailOutbox email, string errorCode)
-    {
-        email.Status = EmailStatuses.Failed;
-        email.LockedUntil = null;
-        email.LastErrorCode = errorCode;
+        return updated > 0;
     }
 
     private TimeSpan CalculateBackoff(int attempts)

@@ -7,7 +7,9 @@
 @using WhalePod.Web.Services
 @inject PublicContentService PublicContent
 @inject ViewCounterService ViewCounter
+@inject LikeService Likes
 @inject AdminAccessService AdminAccess
+@inject CommentDraftStore CommentDrafts
 @inject IAntiforgery Antiforgery
 @inject IHttpContextAccessor HttpContextAccessor
 @inject PublicSiteLinks SiteLinks
@@ -45,6 +47,16 @@ else
     @if (ErrorText is not null)
     {
         <p class="alert alert-error" role="alert">@ErrorText</p>
+    }
+
+    @if (DraftRestored)
+    {
+        <p class="alert alert-success" role="status">已恢复上次未成功提交的评论草稿。</p>
+    }
+
+    @if (ReplyTargetInvalid)
+    {
+        <p class="alert alert-error" role="alert">要回复的评论不存在、已删除或当前不可见；请选择其他评论或直接发表新评论。</p>
     }
 
     @if (Post.ModerationStatus != "approved")
@@ -102,6 +114,39 @@ else
                 </ul>
             }
         </header>
+
+        <section class="post-actions" aria-label="帖子操作">
+            @if (CanEditPost)
+            {
+                <a class="button button-secondary button-compact" href="/posts/@Post.Id/edit">编辑帖子</a>
+            }
+            @if (CanInteract)
+            {
+                @if (IsPostAuthor)
+                {
+                    <span class="muted">不能点赞自己的帖子</span>
+                }
+                else if (PostLike is not null)
+                {
+                    <form method="post" action="/posts/@Post.Id/like" class="inline-form">
+                        <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                        <input type="hidden" name="liked" value="@(PostLike.Liked ? "false" : "true")" />
+                        <button type="submit" class="button button-secondary button-compact">
+                            @(PostLike.Liked ? "取消点赞" : "点赞")
+                        </button>
+                        <span class="mono-meta">@PostLike.LikeCount</span>
+                    </form>
+                }
+                <details class="action-disclosure">
+                    <summary class="button button-secondary button-compact">举报帖子</summary>
+                    <ReportForm TargetType="post" TargetId="@Post.Id" ReturnUrl="@PostUrl" Token="@Token" />
+                </details>
+            }
+            else if (!IsAuthenticated && PostIsPublic)
+            {
+                <a class="muted" href="/login?returnUrl=@Uri.EscapeDataString(PostUrl)">登录后点赞、举报或采纳答案</a>
+            }
+        </section>
 
         <section class="article-meta-panel" aria-label="运行环境与互动数据">
             <div class="meta-block">
@@ -300,7 +345,7 @@ else
                 }
                 <p>
                     <label for="comment-body">评论正文（支持 Markdown，2-10,000 字）</label>
-                    <textarea id="comment-body" name="bodyMd" required maxlength="10000" rows="6"></textarea>
+                    <textarea id="comment-body" name="bodyMd" required maxlength="10000" rows="6">@CommentDraftBody</textarea>
                 </p>
                 <div class="comment-form-actions">
                     <button type="submit">提交评论</button>
@@ -342,12 +387,28 @@ else
     private CommentPage? Comments { get; set; }
     private string Token { get; set; } = string.Empty;
     private bool IsAuthenticated { get; set; }
+    private Guid? ViewerId { get; set; }
+    private bool ViewerIsAdmin { get; set; }
+    private LikeStateView? PostLike { get; set; }
+    private IReadOnlyDictionary<Guid, bool> CommentLikeStates { get; set; } = new Dictionary<Guid, bool>();
+    private CommentView? ReplyTarget { get; set; }
+    private bool ReplyTargetInvalid { get; set; }
+    private bool DraftRestored { get; set; }
+    private string CommentDraftBody { get; set; } = string.Empty;
     private Guid? ReplyToCommentId { get; set; }
     private string NormalizedCommentSort => string.Equals(CommentSort, "top", StringComparison.OrdinalIgnoreCase)
         ? "top"
         : "latest";
 
     private string PostUrl => $"/posts/{PostId}";
+
+    private bool IsPostAuthor => ViewerId is not null && Post is not null && Post.Author.Id == ViewerId.Value;
+
+    private bool CanEditPost => IsAuthenticated
+        && Post is not null
+        && (IsPostAuthor || ViewerIsAdmin);
+
+    private bool CanInteract => IsAuthenticated && Post?.ModerationStatus == "approved";
 
     private string SeoTitle => Post is null ? "内容不存在 - WhalePod" : $"{Post.Title} - WhalePod";
 
@@ -366,20 +427,47 @@ else
     {
         "post-pending" => "帖子已提交，待审核通过后公开显示。",
         "pending" => "评论已提交，待审核通过后公开显示。",
+        "post-updated" => "修改已保存；普通作者编辑后会重新进入审核。",
+        "liked" => "已点赞。",
+        "unliked" => "已取消点赞。",
+        "accepted" => "已采纳该评论为答案。",
+        "unaccepted" => "已取消采纳。",
+        "comment-deleted" => "评论已删除。",
+        "comment-deleted-solved" => "评论已删除，帖子已恢复为未解决。",
+        "report-submitted" => "举报已提交，管理员会处理。",
         _ => null
     };
 
     private string? ErrorText => Error switch
     {
         "invalid" => "评论内容或回复目标无效。",
-        "muted" => "账号处于禁言状态，不能评论。",
-        "activation" => "账号尚未激活，不能评论。",
+        "muted" => "账号处于禁言状态，不能执行该操作。",
+        "activation" => "账号尚未激活，不能执行该操作。",
+        "banned" => "账号已被封禁，不能执行该操作。",
+        "forbidden" => "当前账号没有执行该操作的权限。",
+        "self-like" => "不能点赞自己的内容。",
+        "self-accept" => "不能采纳自己的评论。",
+        "accept-forbidden" => "只有帖子作者可以采纳答案。",
+        "accept-conflict" => "该帖子已有采纳答案，请先取消采纳。",
+        "delete-confirm" => "请先勾选确认再删除评论。",
+        "delete-invalid" => "删除失败：评论可能已被修改；管理员删除他人评论必须填写 1–500 字原因。",
+        "conflict" => "内容已被其他操作修改，请刷新后重试。",
+        "report-invalid" => "举报信息不符合要求，请检查原因与补充说明。",
         _ => null
     };
 
-    private CommentView? ReplyToComment => ReplyToCommentId is null || Comments is null
-        ? null
-        : Comments.Items.FirstOrDefault(comment => comment.Id == ReplyToCommentId.Value);
+    private CommentView? ReplyToComment => ReplyTarget;
+
+    private string ReplyUrl(CommentView comment)
+    {
+        var url = $"{PostUrl}?replyTo={comment.Id}&sort={NormalizedCommentSort}";
+        if (!string.IsNullOrWhiteSpace(CommentCursor))
+        {
+            url += $"&cursor={Uri.EscapeDataString(CommentCursor)}";
+        }
+
+        return $"{url}#comment-{comment.Id}";
+    }
 
     private IReadOnlyList<CommentView> TopLevelComments
     {
@@ -426,7 +514,14 @@ else
         }
     }
 
-    private RenderFragment RenderComment(CommentView comment, int depth) => @<article class="comment" id="comment-@comment.Id">
+    private RenderFragment RenderComment(CommentView comment, int depth) => @<article class="comment comment-depth-@Math.Min(depth, 6)" id="comment-@comment.Id">
+        @{
+            var liked = CommentLikeStates.TryGetValue(comment.Id, out var likedValue) && likedValue;
+            var isOwnComment = ViewerId is not null && comment.Author.Id == ViewerId.Value;
+            var canDelete = IsAuthenticated && CanInteract && !comment.IsDeleted && (ViewerIsAdmin || isOwnComment);
+            var canAccept = IsPostAuthor && CanInteract && !comment.IsDeleted
+                && comment.ModerationStatus == "approved" && !isOwnComment;
+        }
         <div class="comment-head">
             <span class="avatar-initial" aria-hidden="true">@Initial(comment.Author.DisplayName)</span>
             <div class="comment-byline">
@@ -444,10 +539,72 @@ else
                 </div>
             </div>
             <div class="comment-actions">
-                <span>点赞 @comment.LikeCount</span>
+                @if (CanInteract && !comment.IsDeleted && !isOwnComment)
+                {
+                    <form method="post" action="/comments/@comment.Id/like" class="inline-form">
+                        <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                        <input type="hidden" name="postId" value="@PostId" />
+                        <input type="hidden" name="liked" value="@(liked ? "false" : "true")" />
+                        <button type="submit" class="link-button">@(liked ? "取消点赞" : "点赞")</button>
+                        <span>@comment.LikeCount</span>
+                    </form>
+                }
+                else
+                {
+                    <span>点赞 @comment.LikeCount</span>
+                }
+                @if (canAccept)
+                {
+                    @if (comment.IsAccepted)
+                    {
+                        <form method="post" action="/comments/@comment.Id/unaccept" class="inline-form">
+                            <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                            <input type="hidden" name="postId" value="@PostId" />
+                            <button type="submit" class="link-button">取消采纳</button>
+                        </form>
+                    }
+                    else if (Post!.AcceptedCommentId is null)
+                    {
+                        <form method="post" action="/comments/@comment.Id/accept" class="inline-form">
+                            <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                            <input type="hidden" name="postId" value="@PostId" />
+                            <button type="submit" class="link-button">采纳为答案</button>
+                        </form>
+                    }
+                }
                 @if (!comment.IsDeleted && IsAuthenticated && Post?.ModerationStatus == "approved")
                 {
-                    <a href="@($"{PostUrl}?replyTo={comment.Id}&sort={NormalizedCommentSort}#comment-{comment.Id}")">回复</a>
+                    <a href="@ReplyUrl(comment)">回复</a>
+                }
+                @if (canDelete)
+                {
+                    <details class="action-disclosure">
+                        <summary class="link-button">删除</summary>
+                        <form method="post" action="/comments/@comment.Id/delete" class="report-form">
+                            <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                            <input type="hidden" name="postId" value="@PostId" />
+                            <input type="hidden" name="version" value="@comment.Version" />
+                            <label>
+                                <input type="checkbox" name="confirm" value="yes" required />
+                                我确认删除这条评论@(comment.IsAccepted ? "，并取消帖子的已解决状态" : "")
+                            </label>
+                            @if (ViewerIsAdmin && !isOwnComment)
+                            {
+                                <p>
+                                    <label for="delete-reason-@comment.Id">管理员删除原因（必填）</label>
+                                    <textarea id="delete-reason-@comment.Id" name="reason" maxlength="500" required rows="2"></textarea>
+                                </p>
+                            }
+                            <button type="submit" class="button button-compact">确认删除</button>
+                        </form>
+                    </details>
+                }
+                @if (CanInteract && !comment.IsDeleted)
+                {
+                    <details class="action-disclosure">
+                        <summary class="link-button">举报</summary>
+                        <ReportForm TargetType="comment" TargetId="@comment.Id" ReturnUrl="@PostUrl" Token="@Token" />
+                    </details>
                 }
             </div>
         </div>
@@ -459,18 +616,17 @@ else
         {
             <div class="comment-body">@((MarkupString)(comment.BodyHtml ?? string.Empty))</div>
         }
-        @if (depth < 6)
-        {
+        @{
             var children = ChildrenOf(comment).ToList();
-            if (children.Count > 0)
-            {
-                <div class="comment-children">
-                    @foreach (var child in children)
-                    {
-                        @RenderComment(child, depth + 1)
-                    }
-                </div>
-            }
+        }
+        @if (children.Count > 0)
+        {
+            <div class="comment-children">
+                @foreach (var child in children)
+                {
+                    @RenderComment(child, depth + 1)
+                }
+            </div>
         }
     </article>;
 
@@ -509,9 +665,11 @@ else
             out var parsedViewerId)
             ? parsedViewerId
             : (Guid?)null;
+        ViewerId = viewerId;
         IsAuthenticated = http.User.Identity?.IsAuthenticated == true;
         var viewerIsAdmin = viewerId is not null
             && await AdminAccess.IsAdminAsync(viewerId.Value);
+        ViewerIsAdmin = viewerIsAdmin;
         Post = await PublicContent.GetPostForViewerAsync(PostId, viewerId, viewerIsAdmin);
         if (Post is null)
         {
@@ -519,15 +677,48 @@ else
             return;
         }
 
-        if (IsAuthenticated)
+        if (IsAuthenticated && viewerId is not null)
         {
             Token = Antiforgery.GetAndStoreTokens(http).RequestToken
                 ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
+            PostLike = await Likes.GetPostLikeStateAsync(viewerId.Value, PostId, http.RequestAborted);
         }
 
         if (Guid.TryParse(ReplyTo, out var replyToId))
         {
             ReplyToCommentId = replyToId;
+        }
+
+        if (IsAuthenticated && viewerId is not null)
+        {
+            var draft = CommentDrafts.Get(viewerId.Value);
+            if (draft is not null && draft.PostId == PostId)
+            {
+                CommentDraftBody = draft.BodyMd;
+                DraftRestored = true;
+                if (ReplyToCommentId is null && draft.ParentId is not null)
+                {
+                    ReplyToCommentId = draft.ParentId;
+                }
+            }
+
+            if (ReplyToCommentId is { } targetId)
+            {
+                ReplyTarget = await PublicContent.GetCommentForViewerAsync(
+                    targetId,
+                    viewerId,
+                    viewerIsAdmin,
+                    http.RequestAborted);
+                if (ReplyTarget is null
+                    || ReplyTarget.PostId != PostId
+                    || ReplyTarget.ModerationStatus != "approved"
+                    || ReplyTarget.IsDeleted)
+                {
+                    ReplyTarget = null;
+                    ReplyTargetInvalid = true;
+                    ReplyToCommentId = null;
+                }
+            }
         }
 
         if (Post.ModerationStatus == "approved" && HttpMethods.IsGet(http.Request.Method))
@@ -549,11 +740,20 @@ else
                 return;
             }
 
-            Comments = await PublicContent.GetCommentsAsync(
+            var comments = await PublicContent.GetCommentsAsync(
                 PostId,
                 NormalizedCommentSort,
                 50,
                 CommentCursor);
+            Comments = comments;
+
+            if (comments is not null && IsAuthenticated && ViewerId is not null)
+            {
+                CommentLikeStates = await Likes.GetCommentLikeStatesAsync(
+                    ViewerId.Value,
+                    comments.Items.Select(comment => comment.Id).ToList(),
+                    http.RequestAborted);
+            }
         }
     }
 

@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\WhalePod.Contracts\WhalePod.Contracts.csproj" />
     <ProjectReference Include="..\..\src\WhalePod.Api\WhalePod.Api.csproj" />
+    <ProjectReference Include="..\WhalePod.Tests.Integration\WhalePod.Tests.Integration.csproj" />
   </ItemGroup>
 
 </Project>

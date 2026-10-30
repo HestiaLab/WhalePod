@@ -118,6 +118,8 @@ public static class ModerationActions
     public const string Restore = "restore";
     public const string Delete = "delete";
     public const string Escalate = "escalate";
+    public const string Mute = "mute";
+    public const string Ban = "ban";
 }
 
 public static class NotificationTypes

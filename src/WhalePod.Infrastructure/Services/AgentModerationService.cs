@@ -194,7 +194,7 @@ public sealed class AgentModerationService(
         var budget = await aiBudget.GetAsync(settings, cancellationToken);
         if (!settings.SuggestionsPaused && !budget.ContentBudgetExceeded)
         {
-            await SynchronizeTasksAsync(now, cancellationToken);
+            await SynchronizeTasksAsync(now, budget.DailyContentBudget, cancellationToken);
         }
 
         await ReleaseExpiredLeasesAsync(now, cancellationToken);
@@ -342,6 +342,7 @@ public sealed class AgentModerationService(
         }
 
         var leaseExpiresAt = now.AddSeconds(AgentPolicyDefaults.LeaseSeconds);
+        var leaseToken = Guid.NewGuid();
         var updated = await db.ModerationTasks
             .Where(candidate => candidate.Id == taskId
                 && (candidate.Status == ModerationTaskStatuses.Queued
@@ -352,6 +353,7 @@ public sealed class AgentModerationService(
                 setters => setters
                     .SetProperty(candidate => candidate.Status, ModerationTaskStatuses.Claimed)
                     .SetProperty(candidate => candidate.ClaimedByAgentInstanceId, instance.Id)
+                    .SetProperty(candidate => candidate.LeaseToken, leaseToken)
                     .SetProperty(candidate => candidate.ClaimedAt, now)
                     .SetProperty(candidate => candidate.LeaseExpiresAt, leaseExpiresAt)
                     .SetProperty(candidate => candidate.LastErrorCode, (string?)null),
@@ -396,6 +398,7 @@ public sealed class AgentModerationService(
         var instance = await RequireInstanceAsync(identity, instanceHeader, cancellationToken);
         var reason = NormalizeText(request?.Reason, 200, "reason", required: false);
         var task = await db.ModerationTasks
+            .AsNoTracking()
             .SingleOrDefaultAsync(candidate => candidate.Id == taskId, cancellationToken);
         if (task is null)
         {
@@ -417,11 +420,28 @@ public sealed class AgentModerationService(
         }
 
         var now = timeProvider.GetUtcNow();
-        task.Status = ModerationTaskStatuses.Queued;
-        task.ClaimedByAgentInstanceId = null;
-        task.ClaimedAt = null;
-        task.LeaseExpiresAt = null;
-        task.LastErrorCode = "released";
+        var released = await db.ModerationTasks
+            .Where(candidate => candidate.Id == taskId
+                && candidate.Status == ModerationTaskStatuses.Claimed
+                && candidate.ClaimedByAgentInstanceId == instance.Id
+                && candidate.LeaseToken == task.LeaseToken)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(candidate => candidate.Status, ModerationTaskStatuses.Queued)
+                    .SetProperty(candidate => candidate.ClaimedByAgentInstanceId, (Guid?)null)
+                    .SetProperty(candidate => candidate.ClaimedAt, (DateTimeOffset?)null)
+                    .SetProperty(candidate => candidate.LeaseExpiresAt, (DateTimeOffset?)null)
+                    .SetProperty(candidate => candidate.LeaseToken, (Guid?)null)
+                    .SetProperty(candidate => candidate.LastErrorCode, "released"),
+                cancellationToken);
+        if (released == 0)
+        {
+            throw new ApiProblemException(
+                ApiErrorCodes.TaskLeaseExpired,
+                409,
+                "任务租约已过期或不属于当前实例。");
+        }
+
         db.AuditLogs.Add(AuditLogWriter.CreateServiceAction(
             audit,
             "agent.task_released",
@@ -537,17 +557,52 @@ public sealed class AgentModerationService(
         }
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            "SELECT pg_advisory_xact_lock(7210522)",
+            cancellationToken);
+        var currentBudget = await aiBudget.GetAsync(settings, cancellationToken);
+        if (currentBudget.BudgetExceeded)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            await aiBudget.RecordBudgetBlockAsync(audit, currentBudget, cancellationToken);
+            throw AiBudgetService.BudgetExceeded(currentBudget);
+        }
+
+        if (currentBudget.TaskBudgetExceeded)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            await aiBudget.RecordBudgetBlockAsync(
+                audit,
+                currentBudget,
+                "daily_task_budget_exceeded",
+                AiBudgetService.TaskBudgetExceededAction,
+                cancellationToken);
+            throw AiBudgetService.TaskBudgetExceeded(currentBudget);
+        }
+
+        var currentAccountBudget = await aiBudget.GetAccountStatusAsync(
+            identity.ServiceAccountId,
+            cancellationToken);
+        if (currentAccountBudget.BudgetExceeded)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            await aiBudget.RecordAccountBudgetBlockAsync(audit, currentAccountBudget, cancellationToken);
+            throw AiBudgetService.AccountBudgetExceeded(currentAccountBudget);
+        }
+
         var claimed = await db.ModerationTasks
             .Where(candidate => candidate.Id == taskId
                 && candidate.Status == ModerationTaskStatuses.Claimed
                 && candidate.ClaimedByAgentInstanceId == instance.Id
                 && candidate.LeaseExpiresAt != null
-                && candidate.LeaseExpiresAt > now)
+                && candidate.LeaseExpiresAt > now
+                && candidate.LeaseToken == task.LeaseToken)
             .ExecuteUpdateAsync(
                 setters => setters
                     .SetProperty(candidate => candidate.Status, ModerationTaskStatuses.Suggested)
                     .SetProperty(candidate => candidate.SuggestedAt, now)
-                    .SetProperty(candidate => candidate.LeaseExpiresAt, (DateTimeOffset?)null),
+                    .SetProperty(candidate => candidate.LeaseExpiresAt, (DateTimeOffset?)null)
+                    .SetProperty(candidate => candidate.LeaseToken, (Guid?)null),
                 cancellationToken);
         if (claimed == 0)
         {
@@ -666,17 +721,6 @@ public sealed class AgentModerationService(
             throw AiBudgetService.TaskBudgetExceeded(budget);
         }
 
-        if (budget.ContentBudgetExceeded)
-        {
-            await aiBudget.RecordBudgetBlockAsync(
-                audit,
-                budget,
-                "daily_content_budget_exceeded",
-                AiBudgetService.ContentBudgetExceededAction,
-                cancellationToken);
-            throw AiBudgetService.ContentBudgetExceeded(budget);
-        }
-
         var accountBudget = await aiBudget.GetAccountStatusAsync(
             identity.ServiceAccountId,
             cancellationToken);
@@ -732,8 +776,28 @@ public sealed class AgentModerationService(
         return instance;
     }
 
-    private async Task SynchronizeTasksAsync(DateTimeOffset now, CancellationToken cancellationToken)
+    private async Task SynchronizeTasksAsync(
+        DateTimeOffset now,
+        int contentBudget,
+        CancellationToken cancellationToken)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            "SELECT pg_advisory_xact_lock(7210523)",
+            cancellationToken);
+        var dayStart = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
+        var createdToday = await db.ModerationTasks
+            .AsNoTracking()
+            .CountAsync(
+                task => task.CreatedAt >= dayStart && task.CreatedAt < dayStart.AddDays(1),
+                cancellationToken);
+        var remaining = Math.Max(0, contentBudget - createdToday);
+        if (remaining == 0)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return;
+        }
+
         var pendingPosts = await db.Posts
             .AsNoTracking()
             .Where(post => post.ModerationStatus == ModerationStatuses.Pending
@@ -786,8 +850,14 @@ public sealed class AgentModerationService(
             .ToListAsync(cancellationToken);
 
         var created = false;
+        var createdCount = 0;
         foreach (var post in pendingPosts)
         {
+            if (createdCount >= remaining)
+            {
+                break;
+            }
+
             var hash = AgentContentHash.ForPost(post.Id, post.Version, post.Title, post.BodyMd, post.CategoryId);
             var active = tasks
                 .Where(task => task.TargetType == ModerationTargetTypes.Post && task.TargetId == post.Id)
@@ -804,6 +874,7 @@ public sealed class AgentModerationService(
                 stale.Status = ModerationTaskStatuses.Expired;
                 stale.CompletedAt = now;
                 stale.LeaseExpiresAt = null;
+                stale.LeaseToken = null;
                 stale.LastErrorCode = "content_stale";
             }
 
@@ -826,10 +897,16 @@ public sealed class AgentModerationService(
                 reportCount,
                 now));
             created = true;
+            createdCount++;
         }
 
         foreach (var comment in pendingComments)
         {
+            if (createdCount >= remaining)
+            {
+                break;
+            }
+
             var hash = AgentContentHash.ForComment(
                 comment.Id,
                 comment.Version,
@@ -851,6 +928,7 @@ public sealed class AgentModerationService(
                 stale.Status = ModerationTaskStatuses.Expired;
                 stale.CompletedAt = now;
                 stale.LeaseExpiresAt = null;
+                stale.LeaseToken = null;
                 stale.LastErrorCode = "content_stale";
             }
 
@@ -873,6 +951,7 @@ public sealed class AgentModerationService(
                 reportCount,
                 now));
             created = true;
+            createdCount++;
         }
 
         if (created || db.ChangeTracker.HasChanges())
@@ -884,10 +963,14 @@ public sealed class AgentModerationService(
             catch (DbUpdateException exception)
                 when (exception.InnerException is Npgsql.PostgresException { SqlState: "23505" })
             {
+                await transaction.RollbackAsync(cancellationToken);
                 db.ChangeTracker.Clear();
                 logger.LogInformation("Concurrent Agent task synchronization hit a unique task; continuing.");
+                return;
             }
         }
+
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private async Task<bool> EnsureTaskFreshAsync(
@@ -1039,13 +1122,14 @@ public sealed class AgentModerationService(
                         AgentContentRedactor.MaxArtifactChars,
                         redactions);
                     var note = RedactInto(artifact.Note, 200, redactions);
+                    var name = RedactInto(artifact.Name, 200, redactions);
                     return new AgentTaskArtifactView(
                         artifact.Kind,
-                        artifact.Name,
+                        name.Text,
                         note.Text,
                         artifactContent.Text,
-                        artifactContent.Redacted || note.Redacted,
-                        artifactContent.Redacted
+                        artifactContent.Redacted || note.Redacted || name.Redacted,
+                        artifactContent.Redacted || note.Redacted || name.Redacted
                             ? "content_redacted"
                             : artifactContent.Truncated
                                 ? "content_truncated"
@@ -1172,6 +1256,7 @@ public sealed class AgentModerationService(
                     .SetProperty(task => task.ClaimedByAgentInstanceId, (Guid?)null)
                     .SetProperty(task => task.ClaimedAt, (DateTimeOffset?)null)
                     .SetProperty(task => task.LeaseExpiresAt, (DateTimeOffset?)null)
+                    .SetProperty(task => task.LeaseToken, (Guid?)null)
                     .SetProperty(task => task.LastErrorCode, "lease_expired"),
                 cancellationToken);
         if (released > 0)
@@ -1206,13 +1291,16 @@ public sealed class AgentModerationService(
     {
         return await db.ModerationTasks
             .Where(task => task.Id == taskId
-                && task.Status == ModerationTaskStatuses.Claimed)
+                && task.Status == ModerationTaskStatuses.Claimed
+                && task.LeaseExpiresAt != null
+                && task.LeaseExpiresAt <= now)
             .ExecuteUpdateAsync(
                 setters => setters
                     .SetProperty(task => task.Status, ModerationTaskStatuses.Queued)
                     .SetProperty(task => task.ClaimedByAgentInstanceId, (Guid?)null)
                     .SetProperty(task => task.ClaimedAt, (DateTimeOffset?)null)
                     .SetProperty(task => task.LeaseExpiresAt, (DateTimeOffset?)null)
+                    .SetProperty(task => task.LeaseToken, (Guid?)null)
                     .SetProperty(task => task.LastErrorCode, reason),
                 cancellationToken);
     }
@@ -1230,6 +1318,7 @@ public sealed class AgentModerationService(
                     .SetProperty(task => task.Status, ModerationTaskStatuses.Expired)
                     .SetProperty(task => task.CompletedAt, now)
                     .SetProperty(task => task.LeaseExpiresAt, (DateTimeOffset?)null)
+                    .SetProperty(task => task.LeaseToken, (Guid?)null)
                     .SetProperty(task => task.LastErrorCode, reason),
                 cancellationToken);
     }
@@ -1525,9 +1614,10 @@ public sealed class AgentModerationService(
     {
         var json = JsonSerializer.Serialize(new
         {
+            v = 2,
             s = scope,
             p = priority,
-            c = createdAt.ToUnixTimeMilliseconds(),
+            c = createdAt.UtcTicks,
             id
         });
         return Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
@@ -1559,17 +1649,22 @@ public sealed class AgentModerationService(
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
             if (root.GetProperty("s").GetString() != scope
+                || !root.TryGetProperty("v", out var versionElement)
+                || !versionElement.TryGetInt32(out var version)
+                || version != 2
                 || !root.TryGetProperty("p", out var priorityElement)
                 || !root.TryGetProperty("c", out var createdElement)
                 || !root.TryGetProperty("id", out var idElement)
                 || !priorityElement.TryGetInt32(out priority)
-                || !createdElement.TryGetInt64(out var milliseconds)
+                || !createdElement.TryGetInt64(out var ticks)
+                || ticks < DateTimeOffset.MinValue.UtcTicks
+                || ticks > DateTimeOffset.MaxValue.UtcTicks
                 || !Guid.TryParse(idElement.GetString(), out id))
             {
                 return false;
             }
 
-            createdAt = DateTimeOffset.FromUnixTimeMilliseconds(milliseconds);
+            createdAt = new DateTimeOffset(ticks, TimeSpan.Zero);
             return true;
         }
         catch (Exception exception) when (exception is FormatException or JsonException or ArgumentException)

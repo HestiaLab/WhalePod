@@ -5,6 +5,7 @@ const BASE = __ENV.BASE_URL;
 const ORIGIN = __ENV.ORIGIN;
 const ARTIFACT_ID = __ENV.ARTIFACT_ID;
 const TIER = __ENV.TIER || 'target_100';
+const DURATION = __ENV.DURATION;
 
 if (!BASE || !ORIGIN || !ARTIFACT_ID) {
   throw new Error('BASE_URL, ORIGIN and ARTIFACT_ID are required.');
@@ -30,7 +31,7 @@ export const options = {
       executor: 'constant-arrival-rate',
       rate: selected.rate,
       timeUnit: '1s',
-      duration: selected.duration,
+      duration: DURATION || selected.duration,
       preAllocatedVUs: selected.preAllocatedVUs,
       maxVUs: selected.maxVUs,
     },
@@ -38,6 +39,8 @@ export const options = {
   thresholds: {
     http_req_failed: ['rate<0.01'],
     http_req_duration: ['p(95)<500', 'p(99)<1000'],
+    checks: ['rate>0.99'],
+    dropped_iterations: ['count<100'],
   },
   summaryTrendStats: ['min', 'med', 'p(50)', 'p(90)', 'p(95)', 'p(99)', 'max'],
 };

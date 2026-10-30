@@ -12,19 +12,7 @@ namespace WhalePod.Tests.Integration;
 
 public sealed class AuditAdminServiceTests
 {
-    private static string ConnectionString =>
-        Environment.GetEnvironmentVariable("WHALEPOD_TEST_DB_CONNECTION")
-        ?? throw new InvalidOperationException("WHALEPOD_TEST_DB_CONNECTION is required.");
-
-    private static WhalePodDbContext CreateContext()
-    {
-        var options = new DbContextOptionsBuilder<WhalePodDbContext>()
-            .UseNpgsql(ConnectionString)
-            .UseSnakeCaseNamingConvention()
-            .Options;
-
-        return new WhalePodDbContext(options);
-    }
+    private static WhalePodDbContext CreateContext() => ServiceTestSupport.CreateContext();
 
     [DatabaseFact]
     public async Task List_filters_by_actor_action_target_and_time()
@@ -35,9 +23,10 @@ public sealed class AuditAdminServiceTests
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var actor = NewUser("audit-actor");
         var otherActor = NewUser("audit-other");
+        var admin = ServiceTestSupport.NewUser("audit-admin", UserRoles.Admin);
         var now = DateTimeOffset.UtcNow;
 
-        db.Users.AddRange(actor, otherActor);
+        db.Users.AddRange(actor, otherActor, admin);
         db.AuditLogs.AddRange(
             NewAudit(
                 AuditActorTypes.User,
@@ -74,7 +63,7 @@ public sealed class AuditAdminServiceTests
             now.AddHours(-4),
             now.AddHours(1));
 
-        var result = await service.ListAsync(filter, 1);
+        var result = await service.ListAsync(admin.Id, filter, 1);
         var item = Assert.Single(result.Items);
         Assert.Equal(actor.Id, item.ActorId);
         Assert.Equal(actor.Handle, item.ActorHandle);
@@ -84,6 +73,7 @@ public sealed class AuditAdminServiceTests
         Assert.Equal(1, result.TotalCount);
 
         var byTime = await service.ListAsync(
+            admin.Id,
             new AuditFilter(null, $"audit-{suffix}.invite", null, null, now.AddHours(-2.5), now.AddHours(-1.5)),
             1);
         Assert.Single(byTime.Items);
@@ -213,7 +203,7 @@ public sealed class AuditAdminServiceTests
 
     private static AuditAdminService CreateService(WhalePodDbContext db)
     {
-        return new AuditAdminService(db, TimeProvider.System);
+        return new AuditAdminService(db, new AdminAccessService(db), TimeProvider.System);
     }
 
     private static AuditContext NewAuditContext(Guid actorId)

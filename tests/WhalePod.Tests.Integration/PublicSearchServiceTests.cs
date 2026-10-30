@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 using WhalePod.Domain;
 using WhalePod.Domain.Accounts;
@@ -10,19 +11,7 @@ namespace WhalePod.Tests.Integration;
 
 public sealed class PublicSearchServiceTests
 {
-    private static string ConnectionString =>
-        Environment.GetEnvironmentVariable("WHALEPOD_TEST_DB_CONNECTION")
-        ?? throw new InvalidOperationException("WHALEPOD_TEST_DB_CONNECTION is required.");
-
-    private static WhalePodDbContext CreateContext()
-    {
-        var options = new DbContextOptionsBuilder<WhalePodDbContext>()
-            .UseNpgsql(ConnectionString)
-            .UseSnakeCaseNamingConvention()
-            .Options;
-
-        return new WhalePodDbContext(options);
-    }
+    private static WhalePodDbContext CreateContext() => ServiceTestSupport.CreateContext();
 
     [DatabaseFact]
     public async Task Search_returns_grouped_counts_and_only_public_posts()
@@ -31,7 +20,7 @@ public sealed class PublicSearchServiceTests
         await db.Database.MigrateAsync();
 
         var data = await SeedSearchAsync(db);
-        var service = new PublicSearchService(db);
+        var service = new PublicSearchService(db, Options.Create(new PublicSearchOptions()));
 
         var posts = await service.SearchAsync(data.Term, "posts", 10, null);
         Assert.False(posts.InvalidQuery);
@@ -67,7 +56,7 @@ public sealed class PublicSearchServiceTests
         await db.Database.MigrateAsync();
 
         var data = await SeedSearchAsync(db);
-        var service = new PublicSearchService(db);
+        var service = new PublicSearchService(db, Options.Create(new PublicSearchOptions()));
 
         var firstPage = await service.SearchAsync(data.Term, "posts", 1, null);
         var first = Assert.Single(firstPage.Posts);

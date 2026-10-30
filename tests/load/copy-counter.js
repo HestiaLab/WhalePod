@@ -4,6 +4,7 @@ import { check } from 'k6';
 const BASE = __ENV.BASE_URL;
 const ORIGIN = __ENV.ORIGIN;
 const ARTIFACT_ID = __ENV.ARTIFACT_ID;
+const DURATION = __ENV.DURATION || '10m';
 
 if (!BASE || !ORIGIN || !ARTIFACT_ID) {
   throw new Error('BASE_URL, ORIGIN and ARTIFACT_ID are required.');
@@ -16,7 +17,7 @@ export const options = {
       executor: 'constant-arrival-rate',
       rate: 100,
       timeUnit: '1s',
-      duration: '30s',
+      duration: DURATION,
       preAllocatedVUs: 50,
       maxVUs: 100,
     },
@@ -24,6 +25,8 @@ export const options = {
   thresholds: {
     http_req_failed: ['rate<0.001'],
     http_req_duration: ['p(95)<200', 'p(99)<500'],
+    checks: ['rate>0.99'],
+    dropped_iterations: ['count<100'],
   },
 };
 

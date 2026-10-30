@@ -99,7 +99,8 @@ public sealed record PostDetailView(
     IReadOnlyList<ArtifactView> Artifacts,
     DateTimeOffset UpdatedAt,
     int Version,
-    string? LatestModerationReason);
+    string? LatestModerationReason,
+    DateTimeOffset? LatestModerationAt);
 
 public sealed record FeedPage(
     IReadOnlyList<PostSummaryView> Items,
@@ -554,13 +555,17 @@ public sealed class PublicContentService(WhalePodDbContext db)
         bool viewerIsAdmin,
         CancellationToken cancellationToken = default)
     {
+        var effectiveViewerId = await ResolveEffectiveViewerAsync(
+            viewerId,
+            viewerIsAdmin,
+            cancellationToken);
         var row = await db.Comments
             .AsNoTracking()
             .Where(comment => comment.Id == commentId && comment.DeletedAt == null)
             .Where(comment => viewerIsAdmin
                 || comment.ModerationStatus == ModerationStatuses.Approved
-                || (viewerId != null
-                    && comment.AuthorId == viewerId
+                || (effectiveViewerId != null
+                    && comment.AuthorId == effectiveViewerId
                     && (comment.ModerationStatus == ModerationStatuses.Pending
                         || comment.ModerationStatus == ModerationStatuses.Rejected)))
             .Select(comment => new
@@ -753,17 +758,21 @@ public sealed class PublicContentService(WhalePodDbContext db)
         bool viewerIsAdmin,
         CancellationToken cancellationToken = default)
     {
+        var effectiveViewerId = await ResolveEffectiveViewerAsync(
+            viewerId,
+            viewerIsAdmin,
+            cancellationToken);
         var visible = db.Posts
             .AsNoTracking()
             .Where(post => post.Id == postId && post.DeletedAt == null);
 
         if (!viewerIsAdmin)
         {
-            visible = viewerId is null
+            visible = effectiveViewerId is null
                 ? visible.Where(post => post.ModerationStatus == ModerationStatuses.Approved)
                 : visible.Where(post =>
                     post.ModerationStatus == ModerationStatuses.Approved
-                    || (post.AuthorId == viewerId
+                    || (post.AuthorId == effectiveViewerId
                         && (post.ModerationStatus == ModerationStatuses.Pending
                             || post.ModerationStatus == ModerationStatuses.Rejected)));
         }
@@ -870,18 +879,21 @@ public sealed class PublicContentService(WhalePodDbContext db)
         var category = row.Category;
         var author = row.Author;
         string? latestModerationReason = null;
-        if ((viewerIsAdmin || viewerId == post.AuthorId)
+        DateTimeOffset? latestModerationAt = null;
+        if ((viewerIsAdmin || effectiveViewerId == post.AuthorId)
             && post.ModerationStatus != ModerationStatuses.Approved)
         {
-            latestModerationReason = await db.ModerationActions
+            var latestAction = await db.ModerationActions
                 .AsNoTracking()
                 .Where(action => action.TargetType == "post"
                     && action.TargetId == post.Id
                     && action.Reason != null)
                 .OrderByDescending(action => action.CreatedAt)
                 .ThenByDescending(action => action.Id)
-                .Select(action => action.Reason)
+                .Select(action => new { action.Reason, action.CreatedAt })
                 .FirstOrDefaultAsync(cancellationToken);
+            latestModerationReason = latestAction?.Reason;
+            latestModerationAt = latestAction?.CreatedAt;
         }
 
         return new PostDetailView(
@@ -910,7 +922,8 @@ public sealed class PublicContentService(WhalePodDbContext db)
             artifacts,
             post.UpdatedAt,
             post.Version,
-            latestModerationReason);
+            latestModerationReason,
+            latestModerationAt);
     }
 
     internal static PostSummaryView ToSummary(
@@ -979,6 +992,28 @@ public sealed class PublicContentService(WhalePodDbContext db)
         return new EnvironmentView(post.EnvKernel, post.EnvPlatform, post.EnvModel);
     }
 
+    private async Task<Guid?> ResolveEffectiveViewerAsync(
+        Guid? viewerId,
+        bool viewerIsAdmin,
+        CancellationToken cancellationToken)
+    {
+        if (viewerId is null || viewerIsAdmin)
+        {
+            return viewerId;
+        }
+
+        var viewer = await db.Users
+            .AsNoTracking()
+            .Where(user => user.Id == viewerId)
+            .Select(user => new { user.Status, user.DeletedAt })
+            .SingleOrDefaultAsync(cancellationToken);
+        return viewer is null
+            || viewer.DeletedAt is not null
+            || viewer.Status is UserStatuses.Banned or UserStatuses.Deleted
+                ? null
+                : viewerId;
+    }
+
     private static bool TryDecodeCursor(
         string cursor,
         string expectedSort,
@@ -1006,6 +1041,11 @@ public sealed class PublicContentService(WhalePodDbContext db)
 
             var ticks = root.GetProperty("t").GetInt64();
             id = root.GetProperty("i").GetGuid();
+            if (ticks < DateTimeOffset.MinValue.UtcTicks || ticks > DateTimeOffset.MaxValue.UtcTicks)
+            {
+                return false;
+            }
+
             value = new DateTimeOffset(ticks, TimeSpan.Zero);
             return true;
         }
@@ -1065,6 +1105,11 @@ public sealed class PublicContentService(WhalePodDbContext db)
             var ticks = root.GetProperty("t").GetInt64();
             likeCount = root.GetProperty("l").GetInt32();
             id = root.GetProperty("i").GetGuid();
+            if (ticks < DateTimeOffset.MinValue.UtcTicks || ticks > DateTimeOffset.MaxValue.UtcTicks)
+            {
+                return false;
+            }
+
             value = new DateTimeOffset(ticks, TimeSpan.Zero);
             return true;
         }

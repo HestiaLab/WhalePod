@@ -352,6 +352,38 @@ public sealed class DeviceVerificationServiceTests
     }
 
     [DatabaseFact]
+    public async Task Concurrent_challenges_cannot_exceed_the_active_device_limit()
+    {
+        await using var db = ServiceTestSupport.CreateContext();
+        var user = await CreateUserAsync(db, "device-limit-race");
+        var options = new DeviceVerificationOptions { MaxActiveDevices = 1 };
+        var service = CreateService(db, options);
+        var firstChallenge = await service.CreateChallengeAsync(
+            user.Id,
+            ServiceTestSupport.NewAudit(user.Id));
+        var secondChallenge = await service.CreateChallengeAsync(
+            user.Id,
+            ServiceTestSupport.NewAudit(user.Id));
+        var (_, firstRequest) = BuildRequest(firstChallenge.Challenge, user.Handle);
+        var (_, secondRequest) = BuildRequest(secondChallenge.Challenge, user.Handle);
+
+        await using var firstDb = ServiceTestSupport.CreateContext();
+        await using var secondDb = ServiceTestSupport.CreateContext();
+        var first = CreateService(firstDb, options);
+        var second = CreateService(secondDb, options);
+        var results = await Task.WhenAll(
+            TryCompleteWithLimitAsync(first, user.Id, firstRequest),
+            TryCompleteWithLimitAsync(second, user.Id, secondRequest));
+
+        Assert.Equal(1, results.Count(success => success));
+        db.ChangeTracker.Clear();
+        Assert.Equal(
+            1,
+            await db.Devices.CountAsync(candidate =>
+                candidate.UserId == user.Id && candidate.Status == DeviceStatuses.Active));
+    }
+
+    [DatabaseFact]
     public async Task Cleanup_removes_only_challenges_older_than_retention()
     {
         await using var db = ServiceTestSupport.CreateContext();
@@ -418,6 +450,118 @@ public sealed class DeviceVerificationServiceTests
         };
     }
 
+    [DatabaseFact]
+    public async Task Device_can_be_revoked_again_after_reactivation()
+    {
+        await using var db = ServiceTestSupport.CreateContext();
+        var owner = await CreateUserAsync(db, "device-revoke-again");
+        owner.Email = $"device-revoke-again-{ServiceTestSupport.NewSuffix()}@example.test";
+        await db.SaveChangesAsync();
+        var service = CreateService(db, new DeviceVerificationOptions());
+        var challenge = await service.CreateChallengeAsync(owner.Id, ServiceTestSupport.NewAudit(owner.Id));
+        var (key, request) = BuildRequest(challenge.Challenge, owner.Handle);
+        var verified = await service.CompleteAsync(
+            owner.Id,
+            request,
+            ServiceTestSupport.NewAudit(owner.Id));
+        var deviceId = verified.Device.Id;
+
+        var firstRevoke = await service.RevokeAsync(
+            owner.Id,
+            deviceId,
+            null,
+            ServiceTestSupport.NewAudit(owner.Id));
+        Assert.Equal(DeviceStatuses.Revoked, firstRevoke.Status);
+
+        var reactivateChallenge = await service.CreateChallengeAsync(
+            owner.Id,
+            ServiceTestSupport.NewAudit(owner.Id));
+        var (_, reactivateRequest) = BuildRequest(
+            reactivateChallenge.Challenge,
+            owner.Handle,
+            key);
+        var reactivated = await service.CompleteAsync(
+            owner.Id,
+            reactivateRequest,
+            ServiceTestSupport.NewAudit(owner.Id));
+        Assert.Equal(deviceId, reactivated.Device.Id);
+        Assert.Equal(DeviceStatuses.Active, reactivated.Device.Status);
+
+        var secondRevoke = await service.RevokeAsync(
+            owner.Id,
+            deviceId,
+            null,
+            ServiceTestSupport.NewAudit(owner.Id));
+        Assert.Equal(DeviceStatuses.Revoked, secondRevoke.Status);
+        Assert.Equal(
+            2,
+            await db.Notifications.CountAsync(notification =>
+                notification.UserId == owner.Id && notification.Type == NotificationTypes.DeviceRevoked));
+        Assert.Equal(
+            2,
+            await db.EmailOutbox.CountAsync(outbox =>
+                outbox.UserId == owner.Id && outbox.Template == NotificationTypes.DeviceRevoked));
+
+        var idempotent = await service.RevokeAsync(
+            owner.Id,
+            deviceId,
+            null,
+            ServiceTestSupport.NewAudit(owner.Id));
+        Assert.Equal(DeviceStatuses.Revoked, idempotent.Status);
+        Assert.Equal(
+            2,
+            await db.Notifications.CountAsync(notification =>
+                notification.UserId == owner.Id && notification.Type == NotificationTypes.DeviceRevoked));
+    }
+
+    [DatabaseFact]
+    public async Task Concurrent_revocations_are_serialized_and_idempotent()
+    {
+        await using var db = ServiceTestSupport.CreateContext();
+        var owner = await CreateUserAsync(db, "device-revoke-race");
+        var service = CreateService(db, new DeviceVerificationOptions());
+        var challenge = await service.CreateChallengeAsync(owner.Id, ServiceTestSupport.NewAudit(owner.Id));
+        var (_, request) = BuildRequest(challenge.Challenge, owner.Handle);
+        var verified = await service.CompleteAsync(
+            owner.Id,
+            request,
+            ServiceTestSupport.NewAudit(owner.Id));
+
+        await using var firstDb = ServiceTestSupport.CreateContext();
+        await using var secondDb = ServiceTestSupport.CreateContext();
+        var firstService = CreateService(firstDb, new DeviceVerificationOptions());
+        var secondService = CreateService(secondDb, new DeviceVerificationOptions());
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async Task<DeviceRevokeView> RevokeAsync(
+            DeviceVerificationService revoker,
+            WhalePod.Infrastructure.Persistence.WhalePodDbContext context)
+        {
+            await gate.Task;
+            return await revoker.RevokeAsync(
+                owner.Id,
+                verified.Device.Id,
+                null,
+                ServiceTestSupport.NewAudit(owner.Id));
+        }
+
+        var firstTask = Task.Run(() => RevokeAsync(firstService, firstDb));
+        var secondTask = Task.Run(() => RevokeAsync(secondService, secondDb));
+        gate.SetResult();
+        var results = await Task.WhenAll(firstTask, secondTask);
+
+        Assert.All(results, result => Assert.Equal(DeviceStatuses.Revoked, result.Status));
+        db.ChangeTracker.Clear();
+        Assert.Equal(
+            1,
+            await db.Notifications.CountAsync(notification =>
+                notification.UserId == owner.Id && notification.Type == NotificationTypes.DeviceRevoked));
+        Assert.Equal(
+            1,
+            await db.AuditLogs.CountAsync(log =>
+                log.ActorId == owner.Id && log.Action == "device.revoked"));
+    }
+
     private static async Task<User> CreateUserAsync(
         WhalePod.Infrastructure.Persistence.WhalePodDbContext db,
         string prefix,
@@ -461,6 +605,23 @@ public sealed class DeviceVerificationServiceTests
             return true;
         }
         catch (ApiProblemException exception) when (exception.Code == ApiErrorCodes.ChallengeUsed)
+        {
+            return false;
+        }
+    }
+
+    private static async Task<bool> TryCompleteWithLimitAsync(
+        DeviceVerificationService service,
+        Guid userId,
+        DeviceCompleteRequest request)
+    {
+        try
+        {
+            await service.CompleteAsync(userId, request, ServiceTestSupport.NewAudit(userId));
+            return true;
+        }
+        catch (ApiProblemException exception)
+            when (exception.Code is ApiErrorCodes.DeviceLimitReached or ApiErrorCodes.ChallengeUsed)
         {
             return false;
         }

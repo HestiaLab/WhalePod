@@ -20,6 +20,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="WhalePod.Tests.EndToEnd" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\WhalePod.Contracts\WhalePod.Contracts.csproj" />
     <ProjectReference Include="..\..\src\WhalePod.Infrastructure\WhalePod.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\WhalePod.Api\WhalePod.Api.csproj" />

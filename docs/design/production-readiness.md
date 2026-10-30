@@ -16,10 +16,12 @@
 完整配置键、默认值与必填项见 [configuration.md](../configuration.md)；本手册只列生产上线必须确认的类别。
 
 - **数据库**：`ConnectionStrings:WhalePod`，托管 PostgreSQL + TLS。
-- **站点**：`PublicSite:BaseUrl` 为已备案 HTTPS 域名；`AllowedHosts` 不保留 `*`。
+- **站点**：`PublicSite:BaseUrl` 为已备案 HTTPS 域名；`AllowedHosts` 必须显式列出域名，生产含 `*` 或为空会拒绝启动。
+- **安全头**：Web/API 统一发送 `Referrer-Policy`、`X-Content-Type-Options`、`X-Frame-Options`、`Permissions-Policy`；Web 额外发送 `Content-Security-Policy-Report-Only`（先观察，再收紧为强制策略）。
+- **就绪**：`/healthz/ready` 校验数据库可达、无待应用迁移与关键表探测；空库/旧 schema 返回 503，不得切流。
 - **会话**：`DataProtection:KeysDirectory` 持久化并由 Web/API 共享；`Audit:IpHashSecret`、`ViewCounter:DedupeSecret`、`CopyCounter:DedupeSecret` 均 ≥32 字符。
 - **认证**：`Auth:DevLoginEnabled=false`；GitHub OAuth 凭据/回调/白名单已配置；`Auth:BootstrapAdminHandles` 通过秘密存储注入。
-- **邮件**：`Email:Provider=Smtp`，SMTP Host/FromAddress、抑制与退订密钥、`Email:PublicBaseUrl` 齐全。
+- **邮件**：`Email:Provider=Smtp`，SMTP Host/FromAddress、抑制与退订密钥齐全；`Email:PublicBaseUrl` 必须为 HTTPS；`Email:Smtp:Security` 不得为 `None`/`Auto`/`StartTlsWhenAvailable`。
 - **媒体**：`MediaStorage:Provider=S3`，端点/桶/区域/CDN 前缀齐全；AccessKey 成对注入或使用实例角色。
 - **代理**：仅在配置 `KnownProxies`/`KnownNetworks` 后启用 `ReverseProxy:ForwardedHeadersEnabled`。
 - **站点模式**：生产默认关闭 HMAC 黑名单；法务确认后再启用 `Account:GitHubHmacBlacklistEnabled`。
@@ -65,7 +67,7 @@ Operations__Backup__StatusFilePath=/var/lib/whalepod/backup-status.json
 
 ## 3. 数据库迁移与发布顺序
 
-前置：完成备份、迁移评审与预发演练；迁移脚本只向前兼容。
+前置：完成备份、迁移评审与预发演练；迁移脚本只向前兼容。首个迁移 `EnsureCitextExtension` 会执行 `CREATE EXTENSION IF NOT EXISTS citext`；若应用角色无该权限，需由 DBA 预先创建扩展。
 
 ```bash
 export WHALEPOD_DB_CONNECTION="Host=<host>;Port=5432;Database=<db>;Username=<user>;Password=<secret>;SSL Mode=Require"
@@ -79,12 +81,14 @@ dotnet tool run dotnet-ef database update \
 发布顺序（滚动/蓝绿）：
 
 1. 备份数据库与对象存储清单；记录当前镜像版本、迁移版本、DP 目录版本。
-2. 应用向后兼容迁移（先加列/表/索引，不立即删除；当前 5 个迁移，最新为 `AddServiceAccountDailyTokenBudget`）。
+2. 应用向后兼容迁移（先加列/表/索引，不立即删除；当前迁移集最新为 `AddLeaseFencingAndCleanupBackoff`，含会话版本、租约 fencing、媒体退避与通知链接字段）。
 3. 部署新 Web/API 镜像；健康检查通过后切流。
 4. 验证 `/healthz`、`/healthz/ready`、`/admin/system`、登录/发帖/搜索/RSS；观察 5–10 分钟错误率与队列。
 5. 保留旧镜像与数据库快照，进入观察期。
 
-当前 5 个迁移均已在本机开发/测试库验证 Up/Down，`has-pending-model-changes` 无输出；生产/预发尚未应用任何迁移。
+当前迁移集已在本机可弃库验证 Up/Down 与空库/旧 schema 的 ready 行为，`has-pending-model-changes` 无输出；生产/预发尚未应用任何迁移。
+
+**迁移回退策略：不支持数据库降级。** 已有 `appeal_result` 通知/头像等新数据时，部分迁移的 `Down` 会失败或丢失数据；回滚统一采用“上一版本镜像 + 备份恢复到新库 + 恢复对象存储/DP 目录”，详见 [deploy/README.md](../../deploy/README.md)。数据损失窗口 = 最近一次成功备份至故障发生。
 
 ## 4. 备份与恢复
 
@@ -93,30 +97,36 @@ dotnet tool run dotnet-ef database update \
 - [scripts/backup-postgres.ps1](../../scripts/backup-postgres.ps1) / [scripts/backup-postgres.sh](../../scripts/backup-postgres.sh)
 - [scripts/restore-postgres.ps1](../../scripts/restore-postgres.ps1) / [scripts/restore-postgres.sh](../../scripts/restore-postgres.sh)
 
-特性：自定义格式压缩、`--no-owner --no-privileges`、SHA-256 清单、可选状态文件（健康页读取）、默认 30 天清理、恢复强制 `--yes` + `--confirm-database` + 目标名二次确认；不打印连接串/密码；不包含仓库密钥。
+特性：自定义格式压缩、`--no-owner --no-privileges`、SHA-256 清单（恢复时必须存在）、可选状态文件（健康页读取）、默认 30 天清理、恢复强制 `--yes` + `--confirm-database` + 目标名二次确认；目标库已存在且非空时默认拒绝，需显式 `--allow-existing`，此时使用 `--clean --single-transaction`；新库/空库同样启用 `--single-transaction`，恢复失败不会留下半恢复库；连接串支持带引号的密码/分号并传递 `SSL Mode`、根证书、客户端证书/密钥；数据库名仅允许 `whalepod` 或 `whalepod_<小写后缀>`；不打印连接串/密码；不包含仓库密钥。`--dry-run` / `-DryRun` 可校验参数、校验和与连接设置而不执行恢复。
 
 ```bash
-export WHALEPOD_DB_CONNECTION="Host=127.0.0.1;Port=55432;Database=whalepod;Username=postgres"
+export WHALEPOD_DB_CONNECTION="Host=127.0.0.1;Port=55432;Database=whalepod;Username=postgres;SSL Mode=VerifyFull;Root Certificate=/etc/ssl/ca.pem"
 export PG_BIN="/c/Program Files/PostgreSQL/18/bin"          # 或 PATH 中已有 pg_dump/pg_restore
 export WHALEPOD_BACKUP_DIR="$PWD/artifacts/backups"
 export WHALEPOD_BACKUP_STATUS_FILE="$PWD/artifacts/backups/status.json"
 ./scripts/backup-postgres.sh
 
-# 恢复到独立库，必须显式确认；不要在生产直接执行
+# 恢复到新/空库；必须显式确认；不要在生产直接执行
 ./scripts/restore-postgres.sh \
   --backup artifacts/backups/whalepod-whalepod-<timestamp>.dump \
-  --database whalepod_restore_test \
-  --confirm-database whalepod_restore_test --yes
+  --database whalepod_restore_20261028 \
+  --confirm-database whalepod_restore_20261028 --yes
+
+# 显式覆盖非空库（单事务 + clean，失败自动回滚）
+./scripts/restore-postgres.sh \
+  --backup artifacts/backups/whalepod-whalepod-<timestamp>.dump \
+  --database whalepod_restore_20261028 \
+  --confirm-database whalepod_restore_20261028 --allow-existing --yes
 ```
 
 Windows PowerShell 用法：
 
 ```powershell
-$env:WHALEPOD_DB_CONNECTION = "Host=127.0.0.1;Port=55432;Database=whalepod;Username=postgres"
+$env:WHALEPOD_DB_CONNECTION = "Host=127.0.0.1;Port=55432;Database=whalepod;Username=postgres;SSL Mode=VerifyFull;Root Certificate=C:\ssl\ca.pem"
 $env:PG_BIN = "C:\Program Files\PostgreSQL\18\bin"
 .\scripts\backup-postgres.ps1
 .\scripts\restore-postgres.ps1 -BackupFile .\artifacts\backups\<file>.dump `
-  -Database whalepod_restore_test -ConfirmDatabase whalepod_restore_test -Yes
+  -Database whalepod_restore_20261028 -ConfirmDatabase whalepod_restore_20261028 -Yes
 ```
 
 本机恢复演练已完成：备份开发库后恢复到独立库 `whalepod_restore_test`，迁移/表计数、`citext`/`pg_trgm` 扩展与 `trg_audit_log_append_only` 触发器核对一致；审计更新被触发器拒绝。生产备份、异地/异账号副本、加密与每月恢复演练仍需运维执行。
@@ -159,7 +169,7 @@ RPO/RTO：SRS 要求每日全量备份、RPO ≤24h、RTO ≤4h、保留 ≥30 �
 
 1. 触发条件：5xx 持续 >5 分钟、登录/写操作大面积失败、迁移导致不可用、队列持续积压或数据异常。
 2. 应用回滚：切回上一镜像/版本；保留新版本 Pod 现场与日志。
-3. 数据库：优先使用向前兼容迁移；若新版本已执行不可逆迁移，按备份恢复数据库（会丢失恢复点后写入），同时恢复对象存储/DP 目录一致性。
+3. 数据库：**不支持数据库降级**。若新版本已执行不可逆迁移，按备份恢复到新库并切换连接（会丢失恢复点后写入），同时恢复对象存储/DP 目录一致性；容器与命令见 [deploy/README.md](../../deploy/README.md)。
 4. 对象存储：启用 COS 版本/生命周期；回滚前记录对象清单，禁止直接删除生产桶。
 5. 会话：DP 密钥目录不变则会话保留；若轮换/恢复旧目录，用户需重新登录。
 6. 记录：回滚时间、版本、迁移、数据损失窗口、原因与后续动作；目标 10 分钟内恢复（REQ-NF-019）。
@@ -173,7 +183,8 @@ RPO/RTO：SRS 要求每日全量备份、RPO ≤24h、RTO ≤4h、保留 ≥30 �
 | 真实 GitHub OAuth、近期重认证 | 待 GitHub App 凭据、回调域名与网络验收 |
 | SMTP/COS、退信/投诉、CDN/WAF | 待服务商与云资源 |
 | Q-02 模型、200 样本评估、真实 MCP 客户端 + 模型 E2E | 待模型/标注/硬件 |
-| 腾讯云预发迁移、秘密注入、备份恢复演练、UAT-15/16 | 待授权环境 |
+| 镜像/Compose/迁移/备份/回滚 runbook | 仓库已提供（`deploy/`）；镜像构建在 CI 校验，未推送到镜像仓库 |
+| 腾讯云预发迁移、秘密注入、备份恢复演练、UAT-15/16 | 待授权环境（外部运维）；仓库不伪造云上证据 |
 | C-09 法务、ICP/公安备案、日志保留与密钥轮换 | 待法务/运维 |
 | 真实屏幕阅读器、物理设备、macOS/Linux CLI 实机与签名 | 待人工/签名预算 |
 | 完整 10 分钟容量压测与监控阈值校准 | 待预发环境；本地缩短结果见 [performance.md](performance.md) |

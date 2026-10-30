@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -8,9 +9,13 @@ public sealed class McpStdioServer(
     IAgentApiClient client,
     TextReader input,
     TextWriter output,
-    TextWriter error)
+    TextWriter error,
+    TimeSpan? requestTimeout = null)
 {
-    private readonly HashSet<string> _claimedTaskIds = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, InFlightCall> _calls = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _claimedTaskIds = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private readonly TimeSpan _requestTimeout = requestTimeout ?? TimeSpan.FromSeconds(60);
     private bool _shutdownRequested;
 
     public async Task RunAsync(CancellationToken cancellationToken = default)
@@ -44,7 +49,21 @@ public sealed class McpStdioServer(
                     continue;
                 }
 
-                var response = await HandleRequestAsync(request);
+                var requestObject = request as JsonObject;
+                var method = MethodOf(requestObject);
+                if (method == "notifications/cancelled")
+                {
+                    CancelInFlight(requestObject);
+                    continue;
+                }
+
+                if (method == "tools/call" && requestObject?["id"] is not null)
+                {
+                    StartToolCall(requestObject, cancellationToken);
+                    continue;
+                }
+
+                var response = await HandleRequestAsync(request, cancellationToken);
                 if (response is not null)
                 {
                     await WriteAsync(response, cancellationToken);
@@ -53,11 +72,88 @@ public sealed class McpStdioServer(
         }
         finally
         {
+            await CancelAndDrainAsync();
             await ReleaseClaimsAsync();
         }
     }
 
-    public async Task<JsonObject?> HandleRequestAsync(JsonNode? request)
+    private void StartToolCall(JsonObject request, CancellationToken serverToken)
+    {
+        var idKey = request["id"]!.ToJsonString();
+        var callToken = CancellationTokenSource.CreateLinkedTokenSource(serverToken);
+        callToken.CancelAfter(_requestTimeout);
+        var call = new InFlightCall(callToken);
+        _calls[idKey] = call;
+        call.Task = Task.Run(async () =>
+        {
+            JsonObject response;
+            try
+            {
+                response = await HandleRequestAsync(request, callToken.Token)
+                    ?? ErrorResponse(request["id"], -32603, "Internal error");
+            }
+            catch (OperationCanceledException)
+            {
+                response = ErrorResponse(request["id"], -32001, "Tool call timed out or was cancelled");
+            }
+            catch (Exception exception)
+            {
+                await WriteErrorAsync($"MCP tool call failed unexpectedly: {exception.GetType().Name}");
+                response = ErrorResponse(request["id"], -32603, "Internal error");
+            }
+            finally
+            {
+                _calls.TryRemove(idKey, out _);
+                callToken.Dispose();
+            }
+
+            await WriteAsync(response, CancellationToken.None);
+        }, CancellationToken.None);
+    }
+
+    private void CancelInFlight(JsonObject? notification)
+    {
+        var requestId = (notification?["params"] as JsonObject)?["requestId"];
+        if (requestId is null)
+        {
+            return;
+        }
+
+        var key = requestId.ToJsonString();
+        if (_calls.TryGetValue(key, out var call))
+        {
+            call.Cancel();
+        }
+    }
+
+    private async Task CancelAndDrainAsync()
+    {
+        var calls = _calls.Values.ToList();
+        foreach (var call in calls)
+        {
+            call.Cancel();
+        }
+
+        if (calls.Count == 0)
+        {
+            return;
+        }
+
+        var all = Task.WhenAll(calls.Select(call => call.Task));
+        await Task.WhenAny(all, Task.Delay(TimeSpan.FromSeconds(5)));
+    }
+
+    private static string? MethodOf(JsonObject? request)
+    {
+        return request?["method"] is JsonValue methodValue
+            && methodValue.TryGetValue<string>(out var method)
+            ? method
+            : null;
+    }
+
+    public async Task<JsonObject?> HandleRequestAsync(
+        JsonNode? request,
+        CancellationToken cancellationToken = default)
     {
         var requestObject = request as JsonObject;
         var method = requestObject?["method"] is JsonValue methodValue
@@ -104,7 +200,7 @@ public sealed class McpStdioServer(
                     ["tools"] = McpToolCatalog.ToJsonArray()
                 });
             case "tools/call":
-                return ResultResponse(id, await InvokeToolCallAsync(parameters));
+                return ResultResponse(id, await InvokeToolCallAsync(parameters, cancellationToken));
             case "shutdown":
                 _shutdownRequested = true;
                 return ResultResponse(id, new JsonObject());
@@ -113,7 +209,9 @@ public sealed class McpStdioServer(
         }
     }
 
-    private async Task<JsonObject> InvokeToolCallAsync(JsonObject parameters)
+    private async Task<JsonObject> InvokeToolCallAsync(
+        JsonObject parameters,
+        CancellationToken cancellationToken)
     {
         var name = parameters["name"] is JsonValue nameValue
             && nameValue.TryGetValue<string>(out var parsedName)
@@ -129,13 +227,13 @@ public sealed class McpStdioServer(
         {
             var (data, taskContent) = name switch
             {
-                "moderation_list_tasks" => (await ListTasksAsync(arguments), true),
-                "moderation_get_task" => (await GetTaskAsync(arguments), true),
-                "moderation_claim_task" => (await ClaimTaskAsync(arguments), true),
-                "moderation_submit_suggestion" => (await SubmitSuggestionAsync(arguments), false),
-                "moderation_release_task" => (await ReleaseTaskAsync(arguments), false),
-                "moderation_heartbeat" => (await HeartbeatAsync(arguments), false),
-                "moderation_get_policy" => (await PolicyAsync(arguments), false),
+                "moderation_list_tasks" => (await ListTasksAsync(arguments, cancellationToken), true),
+                "moderation_get_task" => (await GetTaskAsync(arguments, cancellationToken), true),
+                "moderation_claim_task" => (await ClaimTaskAsync(arguments, cancellationToken), true),
+                "moderation_submit_suggestion" => (await SubmitSuggestionAsync(arguments, cancellationToken), false),
+                "moderation_release_task" => (await ReleaseTaskAsync(arguments, cancellationToken), false),
+                "moderation_heartbeat" => (await HeartbeatAsync(arguments, cancellationToken), false),
+                "moderation_get_policy" => (await PolicyAsync(arguments, cancellationToken), false),
                 _ => (null, false)
             };
             if (data is null)
@@ -144,6 +242,10 @@ public sealed class McpStdioServer(
             }
 
             return ToolResult(data, taskContent);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return ToolError("MCP_CANCELLED", "工具调用超时或已取消。");
         }
         catch (AgentDisabledException)
         {
@@ -169,7 +271,7 @@ public sealed class McpStdioServer(
         }
     }
 
-    private async Task<JsonObject> ListTasksAsync(JsonObject arguments)
+    private async Task<JsonObject> ListTasksAsync(JsonObject arguments, CancellationToken cancellationToken)
     {
         EnsureAllowed(arguments, "status", "limit", "cursor");
         var status = OptionalString(arguments, "status", 20);
@@ -187,25 +289,26 @@ public sealed class McpStdioServer(
         return await client.ListTasksAsync(
             status,
             limit,
-            OptionalString(arguments, "cursor", 512));
+            OptionalString(arguments, "cursor", 512),
+            cancellationToken);
     }
 
-    private async Task<JsonObject> GetTaskAsync(JsonObject arguments)
+    private async Task<JsonObject> GetTaskAsync(JsonObject arguments, CancellationToken cancellationToken)
     {
         EnsureAllowed(arguments, "taskId");
-        return await client.GetTaskAsync(RequiredTaskId(arguments));
+        return await client.GetTaskAsync(RequiredTaskId(arguments), cancellationToken);
     }
 
-    private async Task<JsonObject> ClaimTaskAsync(JsonObject arguments)
+    private async Task<JsonObject> ClaimTaskAsync(JsonObject arguments, CancellationToken cancellationToken)
     {
         EnsureAllowed(arguments, "taskId");
         var taskId = RequiredTaskId(arguments);
-        var data = await client.ClaimTaskAsync(taskId);
-        _claimedTaskIds.Add(taskId);
+        var data = await client.ClaimTaskAsync(taskId, cancellationToken);
+        _claimedTaskIds.TryAdd(taskId, 0);
         return data;
     }
 
-    private async Task<JsonObject> SubmitSuggestionAsync(JsonObject arguments)
+    private async Task<JsonObject> SubmitSuggestionAsync(JsonObject arguments, CancellationToken cancellationToken)
     {
         EnsureAllowed(
             arguments,
@@ -260,23 +363,25 @@ public sealed class McpStdioServer(
                 contentVersion,
                 idempotencyKey,
                 latencyMs,
-                tokenUsage?.DeepClone().AsObject()));
-        _claimedTaskIds.Remove(taskId);
+                tokenUsage?.DeepClone().AsObject()),
+            cancellationToken);
+        _claimedTaskIds.TryRemove(taskId, out _);
         return data;
     }
 
-    private async Task<JsonObject> ReleaseTaskAsync(JsonObject arguments)
+    private async Task<JsonObject> ReleaseTaskAsync(JsonObject arguments, CancellationToken cancellationToken)
     {
         EnsureAllowed(arguments, "taskId", "reason");
         var taskId = RequiredTaskId(arguments);
         var data = await client.ReleaseTaskAsync(
             taskId,
-            OptionalString(arguments, "reason", 200));
-        _claimedTaskIds.Remove(taskId);
+            OptionalString(arguments, "reason", 200),
+            cancellationToken);
+        _claimedTaskIds.TryRemove(taskId, out _);
         return data;
     }
 
-    private async Task<JsonObject> HeartbeatAsync(JsonObject arguments)
+    private async Task<JsonObject> HeartbeatAsync(JsonObject arguments, CancellationToken cancellationToken)
     {
         EnsureAllowed(arguments, "queueDepth", "lastProcessedAt");
         var queueDepth = OptionalInt(arguments, "queueDepth") ?? 0;
@@ -301,30 +406,34 @@ public sealed class McpStdioServer(
             lastProcessedAt = parsed;
         }
 
-        return await client.HeartbeatAsync(queueDepth, lastProcessedAt);
+        return await client.HeartbeatAsync(queueDepth, lastProcessedAt, cancellationToken);
     }
 
-    private async Task<JsonObject> PolicyAsync(JsonObject arguments)
+    private async Task<JsonObject> PolicyAsync(JsonObject arguments, CancellationToken cancellationToken)
     {
         EnsureAllowed(arguments);
-        return await client.GetPolicyAsync();
+        return await client.GetPolicyAsync(cancellationToken);
     }
 
     private async Task ReleaseClaimsAsync()
     {
-        foreach (var taskId in _claimedTaskIds.ToList())
+        foreach (var taskId in _claimedTaskIds.Keys.ToList())
         {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             try
             {
-                await client.ReleaseTaskAsync(taskId, "mcp_disconnect");
+                await client.ReleaseTaskAsync(taskId, "mcp_disconnect", timeout.Token);
             }
-            catch (Exception exception) when (exception is not OperationCanceledException)
+            catch (Exception exception)
             {
-                await error.WriteLineAsync($"Failed to release MCP task lease on exit: {exception.GetType().Name}");
+                await WriteErrorAsync(
+                    $"Failed to release MCP task lease on exit: {exception.GetType().Name}");
+            }
+            finally
+            {
+                _claimedTaskIds.TryRemove(taskId, out _);
             }
         }
-
-        _claimedTaskIds.Clear();
     }
 
     private static string RequiredTaskId(JsonObject arguments)
@@ -465,7 +574,36 @@ public sealed class McpStdioServer(
 
     private async Task WriteAsync(JsonObject response, CancellationToken cancellationToken)
     {
-        await output.WriteLineAsync(response.ToJsonString());
-        await output.FlushAsync(cancellationToken);
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            await output.WriteLineAsync(response.ToJsonString());
+            await output.FlushAsync(cancellationToken);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    private Task WriteErrorAsync(string message)
+    {
+        return error.WriteLineAsync(message);
+    }
+
+    private sealed class InFlightCall(CancellationTokenSource cancellation)
+    {
+        public Task Task { get; set; } = Task.CompletedTask;
+
+        public void Cancel()
+        {
+            try
+            {
+                cancellation.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
     }
 }
