@@ -164,7 +164,11 @@ public sealed class PublicDiscoveryService(WhalePodDbContext db)
         var latestTag = tags.Count == 0
             ? DateTimeOffset.UnixEpoch
             : tags.Max(tag => tag.UpdatedAt);
+        var latestCategory = categories.Count == 0
+            ? DateTimeOffset.UnixEpoch
+            : categories.Max(category => category.UpdatedAt);
         entries.Add(new SitemapEntry("/", latestPost));
+        entries.Add(new SitemapEntry("/categories", latestCategory));
         entries.Add(new SitemapEntry("/tags", latestTag));
 
         var lastModified = entries.Count == 0

@@ -323,6 +323,61 @@ public sealed class PublicPageHttpTests(ApiHttpEnvironment environment)
         Assert.Contains("内容不存在", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
     }
 
+    [DatabaseFact]
+    public async Task Category_tabs_are_capped_and_category_index_lists_all()
+    {
+        var suffix = ServiceTestSupport.NewSuffix();
+        string lastSlug;
+        await using (var db = ServiceTestSupport.CreateContext())
+        {
+            await db.Database.MigrateAsync();
+            for (var index = 0; index < 35; index++)
+            {
+                var category = ServiceTestSupport.NewCategory($"板块上限{index}-{suffix}");
+                category.DisplayOrder = -100_000 + index;
+                db.Categories.Add(category);
+            }
+
+            await db.SaveChangesAsync();
+            lastSlug = await db.Categories
+                .Where(category => category.Name == $"板块上限34-{suffix}")
+                .Select(category => category.Slug)
+                .SingleAsync();
+        }
+
+        using var client = WebFormTestSupport.CreateClient(environment.WebFactory);
+        using (var home = await client.GetAsync("/"))
+        {
+            Assert.Equal(HttpStatusCode.OK, home.StatusCode);
+            var html = WebUtility.HtmlDecode(await home.Content.ReadAsStringAsync());
+            Assert.Contains($"板块上限0-{suffix}", html, StringComparison.Ordinal);
+            Assert.Contains("更多板块", html, StringComparison.Ordinal);
+            Assert.DoesNotContain($"板块上限34-{suffix}", html, StringComparison.Ordinal);
+        }
+
+        using (var selected = await client.GetAsync(
+                   $"/?category={Uri.EscapeDataString(lastSlug)}"))
+        {
+            Assert.Equal(HttpStatusCode.OK, selected.StatusCode);
+            var html = WebUtility.HtmlDecode(await selected.Content.ReadAsStringAsync());
+            Assert.Contains($"板块上限34-{suffix}", html, StringComparison.Ordinal);
+        }
+
+        using (var indexPage = await client.GetAsync("/categories"))
+        {
+            Assert.Equal(HttpStatusCode.OK, indexPage.StatusCode);
+            var html = WebUtility.HtmlDecode(await indexPage.Content.ReadAsStringAsync());
+            Assert.Contains($"板块上限0-{suffix}", html, StringComparison.Ordinal);
+            Assert.Contains($"板块上限34-{suffix}", html, StringComparison.Ordinal);
+        }
+
+        using (var pagesSitemap = await client.GetAsync("/sitemap-pages.xml"))
+        {
+            Assert.Equal(HttpStatusCode.OK, pagesSitemap.StatusCode);
+            Assert.Contains("/categories", await pagesSitemap.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        }
+    }
+
     private static async Task<string> GetTextAsync(
         HttpClient client,
         string path,

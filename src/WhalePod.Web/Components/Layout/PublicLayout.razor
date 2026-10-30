@@ -34,7 +34,7 @@
                                 全部记录
                             </a>
                         </li>
-                        @foreach (var category in Categories)
+                        @foreach (var category in VisibleCategories)
                         {
                             <li>
                                 <a href="@CategoryUrl(category.Slug)"
@@ -42,6 +42,10 @@
                                     @category.Name
                                 </a>
                             </li>
+                        }
+                        @if (Categories.Count > CategoryLimit)
+                        {
+                            <li><a href="/categories">全部板块（@Categories.Count）</a></li>
                         }
                     </ul>
                 }
@@ -103,9 +107,32 @@
 </div>
 
 @code {
+    private const int CategoryLimit = 30;
+
     private IReadOnlyList<CategoryView> Categories { get; set; } = [];
     private IReadOnlyList<PostSummaryView> Popular { get; set; } = [];
     private bool PopularFailed { get; set; }
+
+    private IReadOnlyList<CategoryView> VisibleCategories
+    {
+        get
+        {
+            if (Categories.Count <= CategoryLimit)
+            {
+                return Categories;
+            }
+
+            var visible = Categories.Take(CategoryLimit).ToList();
+            var selected = Categories.FirstOrDefault(category =>
+                string.Equals(CurrentCategory, category.Slug, StringComparison.OrdinalIgnoreCase));
+            if (selected is not null && visible.All(category => category.Id != selected.Id))
+            {
+                visible.Add(selected);
+            }
+
+            return visible;
+        }
+    }
 
     private bool IsHome
     {

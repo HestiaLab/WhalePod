@@ -48,10 +48,14 @@
     <nav class="tabs category-tabs" aria-label="按板块筛选">
         <a class="tab @(string.IsNullOrWhiteSpace(Category) ? "active" : null)"
            href="@FeedUrl(NormalizedSort, null, Tag, null)">全部板块</a>
-        @foreach (var category in Categories)
+        @foreach (var category in VisibleCategories)
         {
             <a class="tab @(string.Equals(Category, category.Slug, StringComparison.OrdinalIgnoreCase) ? "active" : null)"
                href="@FeedUrl(NormalizedSort, category.Slug, Tag, null)">@category.Name</a>
+        }
+        @if (Categories.Count > CategoryTabLimit)
+        {
+            <a class="tab category-more" href="/categories">更多板块（@Categories.Count）</a>
         }
     </nav>
 }
@@ -130,9 +134,32 @@ else
     [SupplyParameterFromQuery(Name = "cursor")]
     public string? Cursor { get; set; }
 
+    private const int CategoryTabLimit = 30;
+
     private IReadOnlyList<CategoryView> Categories { get; set; } = [];
     private FeedPage? Page { get; set; }
     private string? ErrorMessage { get; set; }
+
+    private IReadOnlyList<CategoryView> VisibleCategories
+    {
+        get
+        {
+            if (Categories.Count <= CategoryTabLimit)
+            {
+                return Categories;
+            }
+
+            var visible = Categories.Take(CategoryTabLimit).ToList();
+            var selected = Categories.FirstOrDefault(category =>
+                string.Equals(Category, category.Slug, StringComparison.OrdinalIgnoreCase));
+            if (selected is not null && visible.All(category => category.Id != selected.Id))
+            {
+                visible.Add(selected);
+            }
+
+            return visible;
+        }
+    }
 
     private string NormalizedSort => SortOptions.Any(option =>
         string.Equals(option.Key, Sort, StringComparison.OrdinalIgnoreCase))

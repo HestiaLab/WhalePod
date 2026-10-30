@@ -1,0 +1,49 @@
+@page "/categories"
+@layout PublicLayout
+@using WhalePod.Infrastructure.Services
+@inject PublicContentService PublicContent
+
+<SeoHead Title="板块 - WhalePod（鲸群）"
+         Description="浏览 WhalePod 的全部板块，并按板块筛选公开实测记录。"
+         CanonicalPath="/categories" />
+
+<header class="page-masthead">
+    <p class="eyebrow">TAXONOMY / 板块索引</p>
+    <h1>板块</h1>
+    <p class="masthead-lead">浏览全部板块；信息流默认展示全部板块的公开内容。</p>
+</header>
+
+@if (Items.Count == 0)
+{
+    <div class="empty-state">
+        <h2>暂无公开板块</h2>
+        <p>板块会随着站点配置出现；也可以先浏览信息流或搜索内容。</p>
+        <p><a href="/">返回信息流</a> · <a href="/search">搜索内容</a></p>
+    </div>
+}
+else
+{
+    <ul class="tag-list tag-cloud" aria-label="全部板块">
+        @foreach (var category in Items)
+        {
+            <li>
+                <a class="tag" href="/?category=@Uri.EscapeDataString(category.Slug)">@category.Name</a>
+                @if (!string.IsNullOrWhiteSpace(category.Description))
+                {
+                    <span class="muted"> — @category.Description</span>
+                }
+            </li>
+        }
+    </ul>
+}
+
+<p class="back-link"><a href="/">← 返回信息流</a> · <a href="/tags">标签</a></p>
+
+@code {
+    private IReadOnlyList<CategoryView> Items { get; set; } = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        Items = await PublicContent.GetCategoriesAsync();
+    }
+}
