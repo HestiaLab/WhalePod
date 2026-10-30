@@ -44,3 +44,10 @@
 
 - 新增 `tests/browser/`：无 npm 依赖的 CDP smoke（截图、控制台错误、可选 axe-core 扫描），详见该目录 README。
 - 历史 axe 结论的原始报告未留存，acceptance 已标注；后续每次 UI 变更以 `tests/browser/` 脚本产出报告并归档。
+
+## 5. 进度（2026-10-30 迭代 1）
+
+- 端点模块化：`Program.cs` 2,783 → 2,096 行；已抽出 `Endpoints/DiscoveryEndpoints.cs`（RSS/Sitemap/robots）与 `Endpoints/AccountEndpoints.cs`（资料/邮件偏好/注销/设备/申诉/退订），共享 `WebEndpointHelpers`。
+- P3-10 测量完成：50k 帖子/200 板块/2,000 标签下首页 p95 36 ms；按阈值增加侧栏 30 项上限与 `/categories` 页，详见 performance.md 第 6 节。
+- 未完成：管理配置端点（标签/邀请码/服务账号/AI/敏感词/审计导出）、编辑器/评论/健康/会话端点、Web/API 共享注册拆分；`AgentModerationService`（1,723 行）尚未拆分。
+- 验收状态：`Program.cs` 仍 >800 行、Agent 服务仍单文件，本迭代不宣称完成；下一步按第 1 节顺序继续。

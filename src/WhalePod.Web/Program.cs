@@ -32,6 +32,7 @@ using WhalePod.Infrastructure.Services;
 using WhalePod.Infrastructure.Storage;
 using WhalePod.Web;
 using WhalePod.Web.Components;
+using WhalePod.Web.Endpoints;
 using WhalePod.Web.Security;
 using WhalePod.Web.Services;
 
@@ -862,387 +863,6 @@ app.MapPost("/admin/invites/disable", async (
     };
 }).RequireAuthorization("AdminOnly");
 
-app.MapPost("/settings/profile/update", async (
-    HttpContext http,
-    IAntiforgery antiforgery,
-    ProfileSettingsService profileSettings,
-    AuditRequestContextFactory auditContextFactory,
-    ILogger<Program> logger) =>
-{
-    var failure = await ValidateFormAsync(http, antiforgery, logger);
-    if (failure is not null)
-    {
-        return failure;
-    }
-
-    if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
-    {
-        return Results.Forbid();
-    }
-
-    var form = await http.Request.ReadFormAsync(http.RequestAborted);
-    var outcome = await profileSettings.UpdateProfileAsync(
-        userId,
-        form["displayName"].ToString(),
-        form["bio"].ToString(),
-        auditContextFactory.Create(userId),
-        http.RequestAborted);
-
-    return outcome switch
-    {
-        SettingsUpdateResult.Success => Results.Redirect("/settings/profile?message=updated"),
-        SettingsUpdateResult.Unchanged => Results.Redirect("/settings/profile?message=unchanged"),
-        SettingsUpdateResult.InvalidInput => Results.Redirect("/settings/profile?error=invalid"),
-        SettingsUpdateResult.NotFound => Results.NotFound(),
-        _ => Results.Forbid()
-    };
-}).RequireAuthorization();
-
-app.MapPost("/settings/emails/update", async (
-    HttpContext http,
-    IAntiforgery antiforgery,
-    ProfileSettingsService profileSettings,
-    AuditRequestContextFactory auditContextFactory,
-    ILogger<Program> logger) =>
-{
-    var failure = await ValidateFormAsync(http, antiforgery, logger);
-    if (failure is not null)
-    {
-        return failure;
-    }
-
-    if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
-    {
-        return Results.Forbid();
-    }
-
-    var form = await http.Request.ReadFormAsync(http.RequestAborted);
-    var repliesMentions = form["repliesMentions"].ToString().Equals("true", StringComparison.OrdinalIgnoreCase);
-    var moderationResults = form["moderationResults"].ToString().Equals("true", StringComparison.OrdinalIgnoreCase);
-
-    var outcome = await profileSettings.UpdateEmailPreferencesAsync(
-        userId,
-        repliesMentions,
-        moderationResults,
-        auditContextFactory.Create(userId),
-        http.RequestAborted);
-
-    return outcome switch
-    {
-        SettingsUpdateResult.Success => Results.Redirect("/settings/emails?message=updated"),
-        SettingsUpdateResult.Unchanged => Results.Redirect("/settings/emails?message=unchanged"),
-        SettingsUpdateResult.NotFound => Results.NotFound(),
-        _ => Results.Forbid()
-    };
-}).RequireAuthorization();
-
-app.MapPost("/settings/account/delete", async (
-    HttpContext http,
-    IAntiforgery antiforgery,
-    AccountDeletionService deletion,
-    AuditRequestContextFactory auditContextFactory,
-    ILogger<Program> logger) =>
-{
-    var failure = await ValidateFormAsync(http, antiforgery, logger);
-    if (failure is not null)
-    {
-        return failure;
-    }
-
-    if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
-    {
-        return Results.Forbid();
-    }
-
-    var form = await http.Request.ReadFormAsync(http.RequestAborted);
-    if (!form["confirmPermanent"].ToString().Equals("true", StringComparison.OrdinalIgnoreCase))
-    {
-        return Results.Redirect("/settings/account?error=confirm");
-    }
-
-    try
-    {
-        await deletion.DeleteAsync(
-            userId,
-            userId,
-            form["deleteContent"].ToString().Equals("true", StringComparison.OrdinalIgnoreCase),
-            form["confirmHandle"].ToString(),
-            auditContextFactory.Create(userId),
-            http.RequestAborted);
-    }
-    catch (ApiProblemException exception)
-    {
-        return Results.Redirect($"/settings/account?error={MapAccountDeletionError(exception)}");
-    }
-
-    await http.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
-    return Results.Redirect("/account/deleted");
-}).RequireAuthorization();
-
-app.MapPost("/settings/devices/challenge", async (
-    HttpContext http,
-    IAntiforgery antiforgery,
-    DeviceVerificationService deviceVerification,
-    DeviceChallengeRevealCache revealCache,
-    AuditRequestContextFactory auditContextFactory,
-    ILogger<Program> logger) =>
-{
-    var failure = await ValidateFormAsync(http, antiforgery, logger);
-    if (failure is not null)
-    {
-        return failure;
-    }
-
-    if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
-    {
-        return Results.Redirect("/activate");
-    }
-
-    try
-    {
-        var challenge = await deviceVerification.CreateChallengeAsync(
-            userId,
-            auditContextFactory.Create(userId),
-            http.RequestAborted);
-        revealCache.Store(userId, challenge);
-        return Results.Redirect("/settings/devices?challenge=created");
-    }
-    catch (ApiProblemException exception)
-    {
-        return Results.Redirect($"/settings/devices?error={MapDeviceError(exception)}");
-    }
-}).RequireAuthorization().RequireRateLimiting("device-challenge");
-
-app.MapPost("/settings/devices/complete", async (
-    HttpContext http,
-    IAntiforgery antiforgery,
-    DeviceVerificationService deviceVerification,
-    AuditRequestContextFactory auditContextFactory,
-    ILogger<Program> logger) =>
-{
-    var failure = await ValidateFormAsync(http, antiforgery, logger);
-    if (failure is not null)
-    {
-        return failure;
-    }
-
-    if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
-    {
-        return Results.Redirect("/activate");
-    }
-
-    var form = await http.Request.ReadFormAsync(http.RequestAborted);
-    var payload = form["payload"].ToString();
-    var label = form["label"].ToString();
-    DeviceCompleteRequest request;
-    if (!string.IsNullOrWhiteSpace(payload))
-    {
-        if (payload.Length > 20_000 || !DevicePayloadParser.TryParse(payload, out var parsed) || parsed is null)
-        {
-            return Results.Redirect("/settings/devices?error=format");
-        }
-
-        request = parsed;
-    }
-    else
-    {
-        if (!long.TryParse(
-                form["manualTimestamp"].ToString(),
-                NumberStyles.Integer,
-                CultureInfo.InvariantCulture,
-                out var timestamp))
-        {
-            return Results.Redirect("/settings/devices?error=format");
-        }
-
-        request = new DeviceCompleteRequest(
-            1,
-            form["manualChallenge"].ToString(),
-            string.IsNullOrWhiteSpace(form["manualHandle"])
-                ? http.User.Identity?.Name
-                : form["manualHandle"].ToString(),
-            timestamp,
-            form["manualKernelVersion"].ToString(),
-            form["manualPlatform"].ToString(),
-            form["manualPublicKey"].ToString(),
-            form["manualSignature"].ToString(),
-            null);
-    }
-
-    if (!string.IsNullOrWhiteSpace(label))
-    {
-        request = request with { Label = label };
-    }
-
-    try
-    {
-        await deviceVerification.CompleteAsync(
-            userId,
-            request,
-            auditContextFactory.Create(userId),
-            http.RequestAborted);
-        return Results.Redirect("/settings/devices?message=verified");
-    }
-    catch (ApiProblemException exception)
-    {
-        return Results.Redirect($"/settings/devices?error={MapDeviceError(exception)}");
-    }
-}).RequireAuthorization().RequireRateLimiting("device-complete");
-
-app.MapPost("/settings/devices/{deviceId:guid}/revoke", async (
-    Guid deviceId,
-    HttpContext http,
-    IAntiforgery antiforgery,
-    DeviceVerificationService deviceVerification,
-    AuditRequestContextFactory auditContextFactory,
-    ILogger<Program> logger) =>
-{
-    var failure = await ValidateFormAsync(http, antiforgery, logger);
-    if (failure is not null)
-    {
-        return failure;
-    }
-
-    if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
-    {
-        return Results.Redirect("/activate");
-    }
-
-    var form = await http.Request.ReadFormAsync(http.RequestAborted);
-    try
-    {
-        await deviceVerification.RevokeAsync(
-            userId,
-            deviceId,
-            form["reason"].ToString(),
-            auditContextFactory.Create(userId),
-            http.RequestAborted);
-        return Results.Redirect("/settings/devices?message=revoked");
-    }
-    catch (ApiProblemException exception)
-    {
-        return Results.Redirect($"/settings/devices?error={MapDeviceError(exception)}");
-    }
-}).RequireAuthorization().RequireRateLimiting("device-write");
-
-app.MapPost("/appeals/submit", async (
-    HttpContext http,
-    IAntiforgery antiforgery,
-    AppealService appeals,
-    AuditRequestContextFactory auditContextFactory,
-    ILogger<Program> logger) =>
-{
-    var failure = await ValidateFormAsync(http, antiforgery, logger);
-    if (failure is not null)
-    {
-        return failure;
-    }
-
-    if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
-    {
-        return Results.Forbid();
-    }
-
-    var form = await http.Request.ReadFormAsync(http.RequestAborted);
-    var targetType = form["targetType"].ToString();
-    var targetIdText = form["targetId"].ToString().Trim();
-    var targetId = userId;
-    if (!targetType.Equals("account_penalty", StringComparison.OrdinalIgnoreCase)
-        && !Guid.TryParse(targetIdText, out targetId))
-    {
-        return Results.Redirect("/appeals?error=target");
-    }
-
-    try
-    {
-        await appeals.SubmitAsync(
-            userId,
-            targetType,
-            targetId,
-            form["reason"].ToString(),
-            auditContextFactory.Create(userId),
-            http.RequestAborted);
-        return Results.Redirect("/appeals?message=submitted");
-    }
-    catch (ApiProblemException exception)
-    {
-        return Results.Redirect($"/appeals?error={MapAppealSubmitError(exception)}");
-    }
-}).RequireAuthorization();
-
-app.MapPost("/admin/appeals/{appealId}/review", async (
-    string appealId,
-    HttpContext http,
-    IAntiforgery antiforgery,
-    AppealService appeals,
-    AuditRequestContextFactory auditContextFactory,
-    ILogger<Program> logger) =>
-{
-    var failure = await ValidateFormAsync(http, antiforgery, logger);
-    if (failure is not null)
-    {
-        return failure;
-    }
-
-    if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var adminId)
-        || !Guid.TryParse(appealId, out var parsedAppealId))
-    {
-        return Results.NotFound();
-    }
-
-    var form = await http.Request.ReadFormAsync(http.RequestAborted);
-    try
-    {
-        await appeals.ReviewAsync(
-            adminId,
-            parsedAppealId,
-            new AppealReviewCommand(form["outcome"].ToString(), form["note"].ToString()),
-            auditContextFactory.Create(adminId),
-            http.RequestAborted);
-        return Results.Redirect("/admin/appeals?message=reviewed");
-    }
-    catch (ApiProblemException exception)
-    {
-        return Results.Redirect($"/admin/appeals?error={MapAppealReviewError(exception)}");
-    }
-}).RequireAuthorization("AdminOnly");
-
-app.MapGet("/email/unsubscribe", async (
-    string? token,
-    HttpContext http,
-    EmailUnsubscribeService unsubscribe,
-    EmailUnsubscribeTokenService tokens,
-    AuditRequestContextFactory auditContextFactory) =>
-{
-    http.Response.Headers.CacheControl = "no-store";
-    http.Response.Headers["X-Content-Type-Options"] = "nosniff";
-    if (!tokens.TryValidate(token, out var userId, out _, out _))
-    {
-        return UnsubscribeResult(StatusCodes.Status400BadRequest, "链接无效", "退订链接无效或已过期。");
-    }
-
-    var outcome = await unsubscribe.UnsubscribeAsync(token, auditContextFactory.Create(userId));
-    return outcome switch
-    {
-        EmailUnsubscribeOutcome.Unsubscribed => UnsubscribeResult(
-            StatusCodes.Status200OK,
-            "退订成功",
-            "此类邮件已退订；账号与安全邮件仍会发送。"),
-        EmailUnsubscribeOutcome.AlreadyDisabled => UnsubscribeResult(
-            StatusCodes.Status200OK,
-            "已退订",
-            "此类邮件此前已退订。"),
-        EmailUnsubscribeOutcome.UserMissing => UnsubscribeResult(
-            StatusCodes.Status404NotFound,
-            "账号不可用",
-            "账号不存在或已注销。"),
-        _ => UnsubscribeResult(
-            StatusCodes.Status400BadRequest,
-            "链接无效",
-            "退订链接无效或已过期。")
-    };
-});
-
 app.MapPost("/posts/{postId:guid}/comments", async (
     Guid postId,
     HttpContext http,
@@ -1428,7 +1048,7 @@ app.MapPost("/editor/create", async (
             ApiErrorCodes.AccountBanned => Results.Redirect("/editor?error=banned&restored=1"),
             ApiErrorCodes.Forbidden => Results.Redirect("/editor?error=auth&restored=1"),
             ApiErrorCodes.ValidationFailed => Results.Redirect(
-                $"/editor?error=validation&field={Uri.EscapeDataString(DetailField(exception) ?? "unknown")}&restored=1"),
+                $"/editor?error=validation&field={Uri.EscapeDataString(WebEndpointHelpers.DetailField(exception) ?? "unknown")}&restored=1"),
             _ => Results.Redirect("/editor?error=invalid&restored=1")
         };
     }
@@ -1461,97 +1081,6 @@ app.MapPost("/editor/preview", async (
     http.Response.Headers["X-Content-Type-Options"] = "nosniff";
     return Results.Content(MarkdownRenderer.Render(body).Html, "text/html; charset=utf-8");
 }).RequireAuthorization();
-
-app.MapGet("/rss.xml", async (
-    HttpContext http,
-    PublicDiscoveryService discovery,
-    PublicSiteLinks siteLinks) =>
-{
-    var document = await discovery.GetRssAsync(50, http.RequestAborted);
-    if (TryWriteNotModified(http, document.LastModified, "rss"))
-    {
-        return Results.StatusCode(StatusCodes.Status304NotModified);
-    }
-
-    return Results.Text(
-        RenderRss(document.Items, document.LastModified, siteLinks),
-        "application/rss+xml; charset=utf-8");
-});
-
-app.MapGet("/sitemap.xml", async (
-    HttpContext http,
-    PublicDiscoveryService discovery,
-    PublicSiteLinks siteLinks) =>
-{
-    var document = await discovery.GetSitemapIndexAsync(5000, http.RequestAborted);
-    if (TryWriteNotModified(http, document.LastModified, "sitemap-index"))
-    {
-        return Results.StatusCode(StatusCodes.Status304NotModified);
-    }
-
-    return Results.Text(
-        RenderSitemapIndex(document.Shards, siteLinks),
-        "application/xml; charset=utf-8");
-});
-
-app.MapGet("/sitemap-posts-{page:int}.xml", async (
-    int page,
-    HttpContext http,
-    PublicDiscoveryService discovery,
-    PublicSiteLinks siteLinks) =>
-{
-    var document = await discovery.GetPostSitemapShardAsync(page, 5000, http.RequestAborted);
-    if (document is null)
-    {
-        return Results.NotFound();
-    }
-
-    if (TryWriteNotModified(http, document.LastModified, $"sitemap-posts-{page}"))
-    {
-        return Results.StatusCode(StatusCodes.Status304NotModified);
-    }
-
-    return Results.Text(
-        RenderSitemap(document.Entries, siteLinks),
-        "application/xml; charset=utf-8");
-});
-
-app.MapGet("/sitemap-pages.xml", async (
-    HttpContext http,
-    PublicDiscoveryService discovery,
-    PublicSiteLinks siteLinks) =>
-{
-    var document = await discovery.GetPageSitemapAsync(http.RequestAborted);
-    if (TryWriteNotModified(http, document.LastModified, "sitemap-pages"))
-    {
-        return Results.StatusCode(StatusCodes.Status304NotModified);
-    }
-
-    return Results.Text(
-        RenderSitemap(document.Entries, siteLinks),
-        "application/xml; charset=utf-8");
-});
-
-app.MapGet("/robots.txt", (HttpContext http, PublicSiteLinks siteLinks) =>
-{
-    http.Response.Headers.CacheControl = "public, max-age=3600";
-    http.Response.Headers["X-Content-Type-Options"] = "nosniff";
-    var robots = $"""
-        User-agent: *
-        Allow: /
-        Disallow: /admin/
-        Disallow: /settings/
-        Disallow: /dev/
-        Disallow: /internal/
-        Disallow: /api/
-        Disallow: /appeals
-        Disallow: /email/unsubscribe
-        Disallow: /editor
-        Disallow: /search
-        Sitemap: {siteLinks.Absolute("/sitemap.xml")}
-        """;
-    return Results.Text(robots, "text/plain; charset=utf-8");
-});
 
 app.MapPost("/admin/audit/export", async (
     HttpContext http,
@@ -2114,6 +1643,8 @@ app.MapPost("/admin/moderation/words/policy", async (
 }).RequireAuthorization("AdminOnly");
 
 app.MapAdminConsoleEndpoints();
+app.MapDiscoveryEndpoints();
+app.MapAccountEndpoints();
 app.MapInteractionEndpoints();
 app.MapEditorEndpoints();
 app.MapGitHubOAuthEndpoints();
@@ -2277,25 +1808,7 @@ static string StatusPageHtml(int statusCode, string title, string message)
         """;
 }
 
-static string MapDeviceError(ApiProblemException exception)
-{
-    return exception.Code switch
-    {
-        ApiErrorCodes.ChallengeNotFound => "challenge-not-found",
-        ApiErrorCodes.ChallengeExpired => "challenge-expired",
-        ApiErrorCodes.ChallengeUsed => "challenge-used",
-        ApiErrorCodes.SignatureInvalid => "signature-invalid",
-        ApiErrorCodes.TimestampInvalid => "timestamp-invalid",
-        ApiErrorCodes.PlatformUnsupported => "platform-unsupported",
-        ApiErrorCodes.DeviceAlreadyBound => "device-bound",
-        ApiErrorCodes.DeviceLimitReached => "device-limit",
-        ApiErrorCodes.DeviceVerificationLocked => "locked",
-        ApiErrorCodes.Forbidden => "forbidden",
-        ApiErrorCodes.AuthRequired => "auth",
-        ApiErrorCodes.NotFound => "not-found",
-        _ => "invalid"
-    };
-}
+
 
 static string MapCommentError(ApiProblemException exception)
 {
@@ -2305,7 +1818,7 @@ static string MapCommentError(ApiProblemException exception)
     }
 
     if (exception.Code == ApiErrorCodes.Forbidden
-        && DetailReason(exception) == "activation_required")
+        && WebEndpointHelpers.DetailReason(exception) == "activation_required")
     {
         return "activation";
     }
@@ -2313,195 +1826,15 @@ static string MapCommentError(ApiProblemException exception)
     return "invalid";
 }
 
-static string RenderRss(
-    IReadOnlyList<RssItemView> items,
-    DateTimeOffset lastModified,
-    PublicSiteLinks siteLinks)
-{
-    XNamespace atom = "http://www.w3.org/2005/Atom";
-    XNamespace dc = "http://purl.org/dc/elements/1.1/";
-    var channel = new XElement(
-        "channel",
-        new XElement("title", "WhalePod（鲸群）"),
-        new XElement("link", siteLinks.BaseUrl),
-        new XElement("description", "可复现的 AI 工具实测记录与可直接复制的产物。"),
-        new XElement("language", "zh-cn"),
-        lastModified > DateTimeOffset.UnixEpoch
-            ? new XElement("lastBuildDate", lastModified.UtcDateTime.ToString("R"))
-            : null,
-        new XElement(
-            atom + "link",
-            new XAttribute("href", siteLinks.Absolute("/rss.xml")),
-            new XAttribute("rel", "self"),
-            new XAttribute("type", "application/rss+xml")),
-        items.Select(item =>
-        {
-            var link = siteLinks.Absolute($"/posts/{item.Id}");
-            return new XElement(
-                "item",
-                new XElement("title", item.Title),
-                new XElement("link", link),
-                new XElement("guid", new XAttribute("isPermaLink", "true"), link),
-                new XElement("pubDate", item.CreatedAt.UtcDateTime.ToString("R")),
-                new XElement("description", item.Excerpt),
-                new XElement("category", item.CategorySlug),
-                new XElement(dc + "creator", $"@{item.AuthorHandle}"));
-        }));
-    var document = new XDocument(
-        new XDeclaration("1.0", "utf-8", null),
-        new XElement(
-            "rss",
-            new XAttribute("version", "2.0"),
-            new XAttribute(XNamespace.Xmlns + "atom", atom),
-            new XAttribute(XNamespace.Xmlns + "dc", dc),
-            channel));
-    return document.ToString(SaveOptions.DisableFormatting);
-}
 
-static bool TryWriteNotModified(
-    HttpContext http,
-    DateTimeOffset lastModified,
-    string resourceName)
-{
-    var etag = $"\"{resourceName}-{lastModified.UtcTicks}\"";
-    http.Response.Headers.CacheControl = "public, max-age=300";
-    http.Response.Headers.ETag = etag;
-    http.Response.Headers.LastModified = lastModified.ToUniversalTime().ToString("R");
-    http.Response.Headers["X-Content-Type-Options"] = "nosniff";
 
-    var ifNoneMatch = http.Request.Headers.IfNoneMatch.ToString();
-    if (!string.IsNullOrWhiteSpace(ifNoneMatch))
-    {
-        var matches = ifNoneMatch
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Any(value => value == "*" || value == etag || value == $"W/{etag}");
-        if (matches)
-        {
-            http.Response.StatusCode = StatusCodes.Status304NotModified;
-        }
 
-        return matches;
-    }
 
-    var ifModifiedSince = http.Request.GetTypedHeaders().IfModifiedSince;
-    if (lastModified > DateTimeOffset.UnixEpoch
-        && ifModifiedSince is not null
-        && lastModified.ToUnixTimeSeconds() <= ifModifiedSince.Value.ToUnixTimeSeconds())
-    {
-        http.Response.StatusCode = StatusCodes.Status304NotModified;
-        return true;
-    }
 
-    return false;
-}
 
-static string RenderSitemapIndex(
-    IReadOnlyList<SitemapShard> shards,
-    PublicSiteLinks siteLinks)
-{
-    XNamespace sitemap = "http://www.sitemaps.org/schemas/sitemap/0.9";
-    var document = new XDocument(
-        new XDeclaration("1.0", "utf-8", null),
-        new XElement(
-            sitemap + "sitemapindex",
-            shards
-                .GroupBy(shard => shard.Path, StringComparer.Ordinal)
-                .Select(group => group.First())
-                .Select(shard => new XElement(
-                    sitemap + "sitemap",
-                    new XElement(sitemap + "loc", siteLinks.Absolute(shard.Path)),
-                    new XElement(
-                        sitemap + "lastmod",
-                        shard.LastModified.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture))))));
-    return document.ToString(SaveOptions.DisableFormatting);
-}
 
-static string RenderSitemap(
-    IReadOnlyList<SitemapEntry> entries,
-    PublicSiteLinks siteLinks)
-{
-    XNamespace sitemap = "http://www.sitemaps.org/schemas/sitemap/0.9";
-    var document = new XDocument(
-        new XDeclaration("1.0", "utf-8", null),
-        new XElement(
-            sitemap + "urlset",
-            entries
-                .GroupBy(entry => entry.Path, StringComparer.Ordinal)
-                .Select(group => group.First())
-                .Select(entry => new XElement(
-                    sitemap + "url",
-                    new XElement(sitemap + "loc", siteLinks.Absolute(entry.Path)),
-                    new XElement(
-                        sitemap + "lastmod",
-                        entry.LastModified.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ"))))));
-    return document.ToString(SaveOptions.DisableFormatting);
-}
 
-static string MapAccountDeletionError(ApiProblemException exception)
-{
-    if (exception.Code == ApiErrorCodes.Forbidden)
-    {
-        return DetailReason(exception) == "last_admin" ? "last-admin" : "invalid";
-    }
 
-    return exception.Code switch
-    {
-        ApiErrorCodes.Conflict => "conflict",
-        ApiErrorCodes.ValidationFailed => "confirm",
-        _ => "invalid"
-    };
-}
-
-static string MapAppealSubmitError(ApiProblemException exception)
-{
-    return exception.Code switch
-    {
-        ApiErrorCodes.Forbidden => "forbidden",
-        ApiErrorCodes.NotFound => "target",
-        ApiErrorCodes.Conflict => "conflict",
-        ApiErrorCodes.ValidationFailed => DetailField(exception) == "reason" ? "reason" : "target",
-        _ => "invalid"
-    };
-}
-
-static string MapAppealReviewError(ApiProblemException exception)
-{
-    return exception.Code switch
-    {
-        ApiErrorCodes.Forbidden => "self",
-        ApiErrorCodes.NotFound => "missing",
-        ApiErrorCodes.Conflict => "conflict",
-        ApiErrorCodes.ValidationFailed => "outcome",
-        _ => "invalid"
-    };
-}
-
-static string? DetailReason(ApiProblemException exception)
-{
-    if (exception.Details is null)
-    {
-        return null;
-    }
-
-    var details = JsonSerializer.SerializeToElement(exception.Details);
-    return details.TryGetProperty("reason", out var reason) ? reason.GetString() : null;
-}
-
-static string? DetailField(ApiProblemException exception)
-{
-    if (exception.Details is null)
-    {
-        return null;
-    }
-
-    var details = JsonSerializer.SerializeToElement(exception.Details);
-    return details.TryGetProperty("issues", out var issues)
-        && issues.ValueKind == JsonValueKind.Array
-        && issues.GetArrayLength() > 0
-        && issues[0].TryGetProperty("field", out var field)
-        ? field.GetString()
-        : null;
-}
 
 static string FormValue(IFormCollection form, string key, int index)
 {
@@ -2550,27 +1883,7 @@ static void SaveEditorSnapshot(EditorDraftStore drafts, Guid userId, IFormCollec
         images));
 }
 
-static IResult UnsubscribeResult(int statusCode, string title, string message)
-{
-    var encodedTitle = WebUtility.HtmlEncode(title);
-    var encodedMessage = WebUtility.HtmlEncode(message);
-    return Results.Text(
-        $"""
-        <!doctype html>
-        <html lang="zh-CN">
-        <head><meta charset="utf-8" /><meta name="robots" content="noindex" /><title>{encodedTitle} - WhalePod</title></head>
-        <body>
-        <main>
-        <h1>{encodedTitle}</h1>
-        <p>{encodedMessage}</p>
-        <p><a href="/settings/emails">管理邮件偏好</a> · <a href="/">返回首页</a></p>
-        </main>
-        </body>
-        </html>
-        """,
-        "text/html; charset=utf-8",
-        statusCode: statusCode);
-}
+
 
 static void UseLocalMediaStaticFiles(WebApplication app)
 {
