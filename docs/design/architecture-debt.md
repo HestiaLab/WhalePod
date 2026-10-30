@@ -50,5 +50,5 @@
 - 端点模块化：`Program.cs` 2,783 → 2,096 行；已抽出 `Endpoints/DiscoveryEndpoints.cs`（RSS/Sitemap/robots）与 `Endpoints/AccountEndpoints.cs`（资料/邮件偏好/注销/设备/申诉/退订），共享 `WebEndpointHelpers`。
 - P3-10 测量完成：50k 帖子/200 板块/2,000 标签下首页 p95 36 ms；按阈值增加侧栏 30 项上限与 `/categories` 页，详见 performance.md 第 6 节。
 - 迭代 2：`Program.cs` 2,096 → 1,299 行；新增 `Endpoints/AdminConfigEndpoints.cs`（标签/邀请码/审计导出/服务账号/AI/敏感词，约 820 行），`Csv`/凭据 reveal helper 一并迁出。
-- 未完成：编辑器/评论/健康/会话端点、Web/API 共享注册拆分；`AgentModerationService`（1,723 行）尚未拆分。
-- 验收状态：`Program.cs` 仍 >800 行、Agent 服务仍单文件，本迭代不宣称完成；下一步按第 1 节顺序继续。
+- 迭代 3：`Program.cs` 1,298 → 785 行；评论创建并入 `InteractionEndpoints`，编辑器 create/preview 并入 `EditorEndpoints`，健康/会话/计数器抽到 `Endpoints/HostEndpoints.cs`，`StatusPageHtml` 移入 `WebEndpointHelpers`。
+- 验收状态：`Program.cs` <800 已达成；Web/API 共享注册留作后续可选；`AgentModerationService`（1,723 行）仍未拆分，下一步按第 3 步拆类。

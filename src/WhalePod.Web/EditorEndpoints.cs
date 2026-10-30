@@ -163,6 +163,173 @@ internal static class EditorEndpoints
             drafts.Clear(actorId);
             return Results.Redirect($"{EditorPath}?message=draft-discarded");
         }).RequireAuthorization();
+
+        app.MapPost("/editor/create", async (
+            HttpContext http,
+            IAntiforgery antiforgery,
+            PostWriteService posts,
+            EditorDraftStore drafts,
+            AuditRequestContextFactory auditContextFactory,
+            ILogger<Program> logger) =>
+        {
+            var failure = await WebFormGuard.ValidateAsync(http, antiforgery, logger);
+            if (failure is not null)
+            {
+                return failure;
+            }
+
+            if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
+            {
+                return Results.Redirect("/editor?error=auth");
+            }
+
+            var form = await http.Request.ReadFormAsync(http.RequestAborted);
+            if (!Guid.TryParse(form["categoryId"], out var categoryId))
+            {
+                SaveEditorSnapshot(drafts, userId, form);
+                return Results.Redirect("/editor?error=validation&field=categoryId&restored=1");
+            }
+
+            var imageIdValues = form["imageIds"];
+            var imageAltValues = form["imageAlt"];
+            List<PostImageInput>? images = null;
+            if (imageIdValues.Count != imageAltValues.Count)
+            {
+                SaveEditorSnapshot(drafts, userId, form);
+                return Results.Redirect("/editor?error=validation&field=imageIds&restored=1");
+            }
+
+            if (imageIdValues.Count > 10)
+            {
+                SaveEditorSnapshot(drafts, userId, form);
+                return Results.Redirect("/editor?error=validation&field=images&restored=1");
+            }
+
+            if (imageIdValues.Count > 0)
+            {
+                images = new List<PostImageInput>(imageIdValues.Count);
+                for (var index = 0; index < imageIdValues.Count; index++)
+                {
+                    if (!Guid.TryParse(imageIdValues[index], out var imageId))
+                    {
+                        SaveEditorSnapshot(drafts, userId, form);
+                        return Results.Redirect("/editor?error=validation&field=imageIds&restored=1");
+                    }
+
+                    var alt = FormValue(form, "imageAlt", index).Trim();
+                    images.Add(new PostImageInput(imageId, alt.Length == 0 ? null : alt));
+                }
+
+                if (images.Select(image => image.Id).Distinct().Count() != images.Count)
+                {
+                    SaveEditorSnapshot(drafts, userId, form);
+                    return Results.Redirect("/editor?error=validation&field=imageIds&restored=1");
+                }
+            }
+
+            var artifactCount = Math.Max(
+                Math.Max(form["artifactKind"].Count, form["artifactName"].Count),
+                Math.Max(form["artifactNote"].Count, form["artifactContent"].Count));
+            if (artifactCount > 5)
+            {
+                SaveEditorSnapshot(drafts, userId, form);
+                return Results.Redirect("/editor?error=validation&field=artifacts&restored=1");
+            }
+
+            List<ArtifactInput>? artifacts = null;
+            for (var index = 0; index < artifactCount; index++)
+            {
+                var kind = FormValue(form, "artifactKind", index);
+                var name = FormValue(form, "artifactName", index).Trim();
+                var note = FormValue(form, "artifactNote", index);
+                var content = FormValue(form, "artifactContent", index);
+                if (kind.Length == 0 && name.Length == 0 && note.Length == 0 && content.Length == 0)
+                {
+                    continue;
+                }
+
+                artifacts ??= [];
+                artifacts.Add(new ArtifactInput(
+                    kind,
+                    name,
+                    string.IsNullOrWhiteSpace(note) ? null : note,
+                    content));
+            }
+
+            var tags = form["tags"]
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            var kernel = form["kernel"].ToString().Trim();
+            var platform = form["platform"].ToString().Trim();
+            var model = form["model"].ToString().Trim();
+            var environment = kernel.Length == 0 && platform.Length == 0 && model.Length == 0
+                ? null
+                : new EnvironmentInput(
+                    kernel.Length == 0 ? null : kernel,
+                    platform.Length == 0 ? null : platform,
+                    model.Length == 0 ? null : model);
+
+            try
+            {
+                var created = await posts.CreateAsync(
+                    userId,
+                    new PostCreateCommand(
+                        form["title"].ToString(),
+                        categoryId,
+                        form["bodyMd"].ToString(),
+                        tags.Count == 0 ? null : tags,
+                        environment,
+                        artifacts,
+                        images),
+                    auditContextFactory.Create(userId),
+                    http.RequestAborted);
+                drafts.Clear(userId);
+                return Results.Redirect($"/posts/{created.Id}?message=post-pending");
+            }
+            catch (ApiProblemException exception)
+            {
+                SaveEditorSnapshot(drafts, userId, form);
+                return exception.Code switch
+                {
+                    ApiErrorCodes.AccountMuted => Results.Redirect("/editor?error=muted&restored=1"),
+                    ApiErrorCodes.AccountBanned => Results.Redirect("/editor?error=banned&restored=1"),
+                    ApiErrorCodes.Forbidden => Results.Redirect("/editor?error=auth&restored=1"),
+                    ApiErrorCodes.ValidationFailed => Results.Redirect(
+                        $"/editor?error=validation&field={Uri.EscapeDataString(WebEndpointHelpers.DetailField(exception) ?? "unknown")}&restored=1"),
+                    _ => Results.Redirect("/editor?error=invalid&restored=1")
+                };
+            }
+        }).RequireAuthorization();
+
+        app.MapPost("/editor/preview", async (
+            HttpContext http,
+            IAntiforgery antiforgery,
+            ILogger<Program> logger) =>
+        {
+            var failure = await WebFormGuard.ValidateAsync(http, antiforgery, logger);
+            if (failure is not null)
+            {
+                return failure;
+            }
+
+            if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out _))
+            {
+                return Results.Unauthorized();
+            }
+
+            var form = await http.Request.ReadFormAsync(http.RequestAborted);
+            var body = form["bodyMd"].ToString();
+            if (RuneHelper.Count(body) > 60_000)
+            {
+                return Results.BadRequest("正文不能超过 60,000 字。");
+            }
+
+            http.Response.Headers.CacheControl = "no-store";
+            http.Response.Headers["X-Content-Type-Options"] = "nosniff";
+            return Results.Content(MarkdownRenderer.Render(body).Html, "text/html; charset=utf-8");
+        }).RequireAuthorization();
     }
 
     private static async Task<IFormCollection> ReadFormAsync(HttpContext http)
@@ -213,5 +380,52 @@ internal static class EditorEndpoints
     {
         actorId = Guid.Empty;
         return Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out actorId);
+    }
+
+    static string FormValue(IFormCollection form, string key, int index)
+    {
+        var values = form[key];
+        return index < values.Count ? values[index] ?? string.Empty : string.Empty;
+    }
+
+    static void SaveEditorSnapshot(EditorDraftStore drafts, Guid userId, IFormCollection form)
+    {
+        var imageIds = form["imageIds"];
+        var imageAlts = form["imageAlt"];
+        var images = new List<EditorImageRef>();
+        var imageCount = Math.Min(imageIds.Count, imageAlts.Count);
+        for (var index = 0; index < imageCount; index++)
+        {
+            if (Guid.TryParse(imageIds[index], out var imageId))
+            {
+                images.Add(new EditorImageRef(imageId, imageAlts[index] ?? string.Empty));
+            }
+        }
+
+        var artifacts = new List<EditorArtifact>(5);
+        for (var index = 0; index < 5; index++)
+        {
+            artifacts.Add(new EditorArtifact(
+                FormValue(form, "artifactKind", index),
+                FormValue(form, "artifactName", index),
+                FormValue(form, "artifactNote", index),
+                FormValue(form, "artifactContent", index)));
+        }
+
+        var tags = form["tags"]
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .Take(20)
+            .ToList();
+        drafts.SaveSnapshot(userId, new EditorSnapshot(
+            form["title"].ToString(),
+            form["categoryId"].ToString(),
+            form["bodyMd"].ToString(),
+            form["kernel"].ToString(),
+            form["platform"].ToString(),
+            form["model"].ToString(),
+            tags,
+            artifacts,
+            images));
     }
 }

@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Antiforgery;
 using WhalePod.Domain;
 using WhalePod.Infrastructure.Services;
 using WhalePod.Web.Security;
+using WhalePod.Web.Services;
 
 namespace WhalePod.Web;
 
@@ -372,6 +373,58 @@ internal static class InteractionEndpoints
                 };
             }
         }).RequireAuthorization();
+
+        app.MapPost("/posts/{postId:guid}/comments", async (
+            Guid postId,
+            HttpContext http,
+            IAntiforgery antiforgery,
+            CommentWriteService comments,
+            CommentDraftStore drafts,
+            AuditRequestContextFactory auditContextFactory,
+            ILogger<Program> logger) =>
+        {
+            var failure = await WebFormGuard.ValidateAsync(http, antiforgery, logger);
+            if (failure is not null)
+            {
+                return failure;
+            }
+
+            if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
+            {
+                return Results.Redirect($"/posts/{postId}?error=invalid");
+            }
+
+            var form = await http.Request.ReadFormAsync(http.RequestAborted);
+            var bodyMd = form["bodyMd"].ToString();
+            Guid? parentId = null;
+            if (!string.IsNullOrWhiteSpace(form["parentId"]))
+            {
+                if (!Guid.TryParse(form["parentId"], out var parsedParent))
+                {
+                    drafts.Save(userId, postId, null, bodyMd);
+                    return Results.Redirect($"/posts/{postId}?error=invalid&restored=1");
+                }
+
+                parentId = parsedParent;
+            }
+
+            try
+            {
+                await comments.CreateAsync(
+                    userId,
+                    postId,
+                    new CommentCreateCommand(bodyMd, parentId),
+                    auditContextFactory.Create(userId),
+                    http.RequestAborted);
+                drafts.Clear(userId);
+                return Results.Redirect($"/posts/{postId}?message=pending");
+            }
+            catch (ApiProblemException exception)
+            {
+                drafts.Save(userId, postId, parentId, bodyMd);
+                return Results.Redirect($"/posts/{postId}?error={MapCommentError(exception)}&restored=1");
+            }
+        }).RequireAuthorization();
     }
 
     private static IResult MapAcceptanceError(ApiProblemException exception, string returnPath)
@@ -481,5 +534,21 @@ internal static class InteractionEndpoints
             && value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
+    }
+
+    static string MapCommentError(ApiProblemException exception)
+    {
+        if (exception.Code == ApiErrorCodes.AccountMuted)
+        {
+            return "muted";
+        }
+
+        if (exception.Code == ApiErrorCodes.Forbidden
+            && WebEndpointHelpers.DetailReason(exception) == "activation_required")
+        {
+            return "activation";
+        }
+
+        return "invalid";
     }
 }
