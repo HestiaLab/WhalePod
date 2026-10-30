@@ -24,6 +24,8 @@ public sealed partial class AgentModerationService
     private readonly ILogger<AgentModerationService> logger;
     private readonly AgentTaskSynchronizer synchronizer;
     private readonly AgentContentProjector projector;
+    private readonly AgentTaskLeaseService leaseService;
+    private readonly AgentBudgetGate budgetGate;
 
     public AgentModerationService(
         WhalePodDbContext db,
@@ -39,6 +41,8 @@ public sealed partial class AgentModerationService
         this.logger = logger;
         synchronizer = new AgentTaskSynchronizer(db, logger);
         projector = new AgentContentProjector(db);
+        leaseService = new AgentTaskLeaseService(db);
+        budgetGate = new AgentBudgetGate(aiSettings, aiBudget, logger);
     }
 
     internal static readonly string[] ActiveTaskStatuses =
@@ -57,7 +61,7 @@ public sealed partial class AgentModerationService
         string? cursor,
         CancellationToken cancellationToken = default)
     {
-        var settings = await RequireEnabledAsync(cancellationToken);
+        var settings = await budgetGate.RequireEnabledAsync(cancellationToken);
         var instance = await RequireInstanceAsync(identity, instanceHeader, cancellationToken);
         var normalizedStatus = NormalizeTaskFilter(status);
         var normalizedLimit = Math.Clamp(limit, 1, 50);
@@ -68,7 +72,11 @@ public sealed partial class AgentModerationService
             await synchronizer.SynchronizeAsync(now, budget.DailyContentBudget, cancellationToken);
         }
 
-        await ReleaseExpiredLeasesAsync(now, cancellationToken);
+        var expired = await leaseService.ReleaseExpiredAsync(now, cancellationToken);
+        if (expired > 0)
+        {
+            await RecordLeaseExpiryAsync(expired, now, cancellationToken);
+        }
 
         var scope = $"agent-tasks|{instance.Id:N}|{normalizedStatus}";
         var query = db.ModerationTasks
@@ -122,7 +130,7 @@ public sealed partial class AgentModerationService
         Guid taskId,
         CancellationToken cancellationToken = default)
     {
-        await RequireEnabledAsync(cancellationToken);
+        await budgetGate.RequireEnabledAsync(cancellationToken);
         var instance = await RequireInstanceAsync(identity, instanceHeader, cancellationToken);
         var task = await db.ModerationTasks
             .AsNoTracking()
@@ -140,7 +148,7 @@ public sealed partial class AgentModerationService
             && task.LeaseExpiresAt is not null
             && task.LeaseExpiresAt <= now)
         {
-            var released = await ReleaseTaskLeaseAsync(task.Id, now, "lease_expired", cancellationToken);
+            var released = await leaseService.ReleaseLeaseAsync(task.Id, now, "lease_expired", cancellationToken);
             if (released > 0)
             {
                 await RecordLeaseExpiryAsync(released, now, cancellationToken);
@@ -163,16 +171,20 @@ public sealed partial class AgentModerationService
         AuditContext audit,
         CancellationToken cancellationToken = default)
     {
-        var settings = await RequireEnabledAsync(cancellationToken);
+        var settings = await budgetGate.RequireEnabledAsync(cancellationToken);
         if (settings.SuggestionsPaused)
         {
             throw AgentDisabled();
         }
 
         var instance = await RequireInstanceAsync(identity, instanceHeader, cancellationToken);
-        await EnsureNewWorkAllowedAsync(settings, identity, audit, cancellationToken);
+        await budgetGate.EnsureNewWorkAllowedAsync(settings, identity, audit, cancellationToken);
         var now = timeProvider.GetUtcNow();
-        await ReleaseExpiredLeasesAsync(now, cancellationToken);
+        var expired = await leaseService.ReleaseExpiredAsync(now, cancellationToken);
+        if (expired > 0)
+        {
+            await RecordLeaseExpiryAsync(expired, now, cancellationToken);
+        }
         var task = await db.ModerationTasks
             .AsNoTracking()
             .SingleOrDefaultAsync(candidate => candidate.Id == taskId, cancellationToken);
@@ -212,24 +224,8 @@ public sealed partial class AgentModerationService
                 "任务已结束，不能再次领取。");
         }
 
-        var leaseExpiresAt = now.AddSeconds(AgentPolicyDefaults.LeaseSeconds);
-        var leaseToken = Guid.NewGuid();
-        var updated = await db.ModerationTasks
-            .Where(candidate => candidate.Id == taskId
-                && (candidate.Status == ModerationTaskStatuses.Queued
-                    || (candidate.Status == ModerationTaskStatuses.Claimed
-                        && candidate.LeaseExpiresAt != null
-                        && candidate.LeaseExpiresAt <= now)))
-            .ExecuteUpdateAsync(
-                setters => setters
-                    .SetProperty(candidate => candidate.Status, ModerationTaskStatuses.Claimed)
-                    .SetProperty(candidate => candidate.ClaimedByAgentInstanceId, instance.Id)
-                    .SetProperty(candidate => candidate.LeaseToken, leaseToken)
-                    .SetProperty(candidate => candidate.ClaimedAt, now)
-                    .SetProperty(candidate => candidate.LeaseExpiresAt, leaseExpiresAt)
-                    .SetProperty(candidate => candidate.LastErrorCode, (string?)null),
-                cancellationToken);
-        if (updated == 0)
+        var lease = await leaseService.TryClaimAsync(taskId, instance.Id, now, cancellationToken);
+        if (lease is null)
         {
             throw new ApiProblemException(
                 ApiErrorCodes.TaskAlreadyClaimed,
@@ -248,13 +244,13 @@ public sealed partial class AgentModerationService
                 targetType = task.TargetType,
                 targetId = task.TargetId,
                 contentVersion = task.ContentVersion,
-                leaseExpiresAt
+                leaseExpiresAt = lease.ExpiresAt
             },
             now));
         await db.SaveChangesAsync(cancellationToken);
         var detail = await projector.BuildTaskDetailAsync(taskId, cancellationToken)
             ?? throw TaskNotFound();
-        return new AgentClaimResultView(detail, leaseExpiresAt);
+        return new AgentClaimResultView(detail, lease.ExpiresAt);
     }
 
     public async Task<AgentReleaseResultView> ReleaseTaskAsync(
@@ -265,7 +261,7 @@ public sealed partial class AgentModerationService
         AuditContext audit,
         CancellationToken cancellationToken = default)
     {
-        await RequireEnabledAsync(cancellationToken);
+        await budgetGate.RequireEnabledAsync(cancellationToken);
         var instance = await RequireInstanceAsync(identity, instanceHeader, cancellationToken);
         var reason = NormalizeText(request?.Reason, 200, "reason", required: false);
         var task = await db.ModerationTasks
@@ -291,21 +287,13 @@ public sealed partial class AgentModerationService
         }
 
         var now = timeProvider.GetUtcNow();
-        var released = await db.ModerationTasks
-            .Where(candidate => candidate.Id == taskId
-                && candidate.Status == ModerationTaskStatuses.Claimed
-                && candidate.ClaimedByAgentInstanceId == instance.Id
-                && candidate.LeaseToken == task.LeaseToken)
-            .ExecuteUpdateAsync(
-                setters => setters
-                    .SetProperty(candidate => candidate.Status, ModerationTaskStatuses.Queued)
-                    .SetProperty(candidate => candidate.ClaimedByAgentInstanceId, (Guid?)null)
-                    .SetProperty(candidate => candidate.ClaimedAt, (DateTimeOffset?)null)
-                    .SetProperty(candidate => candidate.LeaseExpiresAt, (DateTimeOffset?)null)
-                    .SetProperty(candidate => candidate.LeaseToken, (Guid?)null)
-                    .SetProperty(candidate => candidate.LastErrorCode, "released"),
-                cancellationToken);
-        if (released == 0)
+        var released = await leaseService.TryReleaseAsync(
+            taskId,
+            instance.Id,
+            task.LeaseToken,
+            "released",
+            cancellationToken);
+        if (!released)
         {
             throw new ApiProblemException(
                 ApiErrorCodes.TaskLeaseExpired,
@@ -332,7 +320,7 @@ public sealed partial class AgentModerationService
         var snapshot = await projector.GetCurrentSnapshotAsync(task, cancellationToken);
         if (snapshot is null)
         {
-            await ExpireTaskAsync(task.Id, "content_missing", now, cancellationToken);
+            await leaseService.ExpireAsync(task.Id, "content_missing", now, cancellationToken);
             return false;
         }
 
@@ -351,44 +339,11 @@ public sealed partial class AgentModerationService
                 snapshot.Comment.BodyMd);
         if (task.ContentVersion != snapshot.Version || task.ContentHash != hash)
         {
-            await ExpireTaskAsync(task.Id, "content_stale", now, cancellationToken);
+            await leaseService.ExpireAsync(task.Id, "content_stale", now, cancellationToken);
             return false;
         }
 
         return true;
-    }
-
-    private async Task ReleaseExpiredLeasesAsync(DateTimeOffset now, CancellationToken cancellationToken)
-    {
-        var hasExpired = await db.ModerationTasks
-            .AsNoTracking()
-            .AnyAsync(
-                task => task.Status == ModerationTaskStatuses.Claimed
-                    && task.LeaseExpiresAt != null
-                    && task.LeaseExpiresAt <= now,
-                cancellationToken);
-        if (!hasExpired)
-        {
-            return;
-        }
-
-        var released = await db.ModerationTasks
-            .Where(task => task.Status == ModerationTaskStatuses.Claimed
-                && task.LeaseExpiresAt != null
-                && task.LeaseExpiresAt <= now)
-            .ExecuteUpdateAsync(
-                setters => setters
-                    .SetProperty(task => task.Status, ModerationTaskStatuses.Queued)
-                    .SetProperty(task => task.ClaimedByAgentInstanceId, (Guid?)null)
-                    .SetProperty(task => task.ClaimedAt, (DateTimeOffset?)null)
-                    .SetProperty(task => task.LeaseExpiresAt, (DateTimeOffset?)null)
-                    .SetProperty(task => task.LeaseToken, (Guid?)null)
-                    .SetProperty(task => task.LastErrorCode, "lease_expired"),
-                cancellationToken);
-        if (released > 0)
-        {
-            await RecordLeaseExpiryAsync(released, now, cancellationToken);
-        }
     }
 
     private async Task RecordLeaseExpiryAsync(
@@ -407,46 +362,6 @@ public sealed partial class AgentModerationService
             },
             now));
         await db.SaveChangesAsync(cancellationToken);
-    }
-
-    private async Task<int> ReleaseTaskLeaseAsync(
-        Guid taskId,
-        DateTimeOffset now,
-        string reason,
-        CancellationToken cancellationToken)
-    {
-        return await db.ModerationTasks
-            .Where(task => task.Id == taskId
-                && task.Status == ModerationTaskStatuses.Claimed
-                && task.LeaseExpiresAt != null
-                && task.LeaseExpiresAt <= now)
-            .ExecuteUpdateAsync(
-                setters => setters
-                    .SetProperty(task => task.Status, ModerationTaskStatuses.Queued)
-                    .SetProperty(task => task.ClaimedByAgentInstanceId, (Guid?)null)
-                    .SetProperty(task => task.ClaimedAt, (DateTimeOffset?)null)
-                    .SetProperty(task => task.LeaseExpiresAt, (DateTimeOffset?)null)
-                    .SetProperty(task => task.LeaseToken, (Guid?)null)
-                    .SetProperty(task => task.LastErrorCode, reason),
-                cancellationToken);
-    }
-
-    private Task ExpireTaskAsync(
-        Guid taskId,
-        string reason,
-        DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        return db.ModerationTasks
-            .Where(task => task.Id == taskId && ActiveTaskStatuses.Contains(task.Status))
-            .ExecuteUpdateAsync(
-                setters => setters
-                    .SetProperty(task => task.Status, ModerationTaskStatuses.Expired)
-                    .SetProperty(task => task.CompletedAt, now)
-                    .SetProperty(task => task.LeaseExpiresAt, (DateTimeOffset?)null)
-                    .SetProperty(task => task.LeaseToken, (Guid?)null)
-                    .SetProperty(task => task.LastErrorCode, reason),
-                cancellationToken);
     }
 
     private static string NormalizeTaskFilter(string? status)
@@ -488,7 +403,7 @@ public sealed partial class AgentModerationService
         return normalized;
     }
 
-    private static ApiProblemException AgentDisabled()
+    internal static ApiProblemException AgentDisabled()
     {
         return new ApiProblemException(
             ApiErrorCodes.AgentDisabled,

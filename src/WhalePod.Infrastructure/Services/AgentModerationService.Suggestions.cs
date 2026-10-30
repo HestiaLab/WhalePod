@@ -20,7 +20,7 @@ public sealed partial class AgentModerationService
         AuditContext audit,
         CancellationToken cancellationToken = default)
     {
-        var settings = await RequireEnabledAsync(cancellationToken);
+        var settings = await budgetGate.RequireEnabledAsync(cancellationToken);
         if (settings.SuggestionsPaused)
         {
             throw AgentDisabled();
@@ -47,7 +47,7 @@ public sealed partial class AgentModerationService
             return (ToSuggestionResult(existing), true);
         }
 
-        await EnsureNewWorkAllowedAsync(settings, identity, audit, cancellationToken);
+        await budgetGate.EnsureNewWorkAllowedAsync(settings, identity, audit, cancellationToken);
         var now = timeProvider.GetUtcNow();
         var task = await db.ModerationTasks
             .AsNoTracking()
@@ -60,7 +60,7 @@ public sealed partial class AgentModerationService
         var snapshot = await projector.GetCurrentSnapshotAsync(task, cancellationToken);
         if (snapshot is null)
         {
-            await ExpireTaskAsync(task.Id, "content_missing", now, cancellationToken);
+            await leaseService.ExpireAsync(task.Id, "content_missing", now, cancellationToken);
             throw TaskNotFound();
         }
 
@@ -79,7 +79,7 @@ public sealed partial class AgentModerationService
                 snapshot.Comment.BodyMd);
         if (task.ContentVersion != snapshot.Version || task.ContentHash != currentHash)
         {
-            await ExpireTaskAsync(task.Id, "content_stale", now, cancellationToken);
+            await leaseService.ExpireAsync(task.Id, "content_stale", now, cancellationToken);
             throw new ApiProblemException(
                 ApiErrorCodes.ContentVersionStale,
                 409,
@@ -149,21 +149,13 @@ public sealed partial class AgentModerationService
             throw AiBudgetService.AccountBudgetExceeded(currentAccountBudget);
         }
 
-        var claimed = await db.ModerationTasks
-            .Where(candidate => candidate.Id == taskId
-                && candidate.Status == ModerationTaskStatuses.Claimed
-                && candidate.ClaimedByAgentInstanceId == instance.Id
-                && candidate.LeaseExpiresAt != null
-                && candidate.LeaseExpiresAt > now
-                && candidate.LeaseToken == task.LeaseToken)
-            .ExecuteUpdateAsync(
-                setters => setters
-                    .SetProperty(candidate => candidate.Status, ModerationTaskStatuses.Suggested)
-                    .SetProperty(candidate => candidate.SuggestedAt, now)
-                    .SetProperty(candidate => candidate.LeaseExpiresAt, (DateTimeOffset?)null)
-                    .SetProperty(candidate => candidate.LeaseToken, (Guid?)null),
-                cancellationToken);
-        if (claimed == 0)
+        var claimed = await leaseService.TryMarkSuggestedAsync(
+            taskId,
+            instance.Id,
+            task.LeaseToken,
+            now,
+            cancellationToken);
+        if (!claimed)
         {
             await transaction.RollbackAsync(cancellationToken);
             throw new ApiProblemException(
@@ -171,7 +163,6 @@ public sealed partial class AgentModerationService
                 409,
                 "任务租约已过期或已被人工裁决。");
         }
-
         var entity = new ModerationSuggestion
         {
             TaskId = taskId,

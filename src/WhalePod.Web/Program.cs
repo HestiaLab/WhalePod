@@ -26,6 +26,7 @@ using Microsoft.Extensions.Options;
 using WhalePod.Contracts.Devices;
 using WhalePod.Domain;
 using WhalePod.Domain.Accounts;
+using WhalePod.Infrastructure.DependencyInjection;
 using WhalePod.Infrastructure.Email;
 using WhalePod.Infrastructure.Persistence;
 using WhalePod.Infrastructure.Services;
@@ -143,53 +144,34 @@ builder.Services.AddDataProtection()
 
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
-builder.Services.AddWhalePodDbContext(connectionString);
-builder.Services.AddWhalePodMediaStorage(
+builder.Services.AddWhalePodSharedServices(
     builder.Configuration,
     builder.Environment.ContentRootPath,
-    builder.Environment.IsDevelopment());
-builder.Services.AddWhalePodEmail(
-    builder.Configuration,
     builder.Environment.IsDevelopment(),
-    includeTransport: false);
+    connectionString,
+    includeEmailTransport: false);
+builder.Services.Configure<DeviceVerificationOptions>(
+    builder.Configuration.GetSection("DeviceVerification"));
+builder.Services.Configure<RetentionOptions>(builder.Configuration.GetSection("Retention"));
+builder.Services.Configure<PublicSearchOptions>(builder.Configuration.GetSection("PublicSearch"));
+
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<InviteRedemptionService>();
 builder.Services.AddScoped<CopyCounterService>();
 builder.Services.AddScoped<ViewCounterService>();
-builder.Services.AddScoped<AdminAccessService>();
-builder.Services.AddScoped<SessionValidator>();
-builder.Services.AddScoped<ActorGuard>();
 builder.Services.AddScoped<AdminBootstrapService>();
-builder.Services.AddScoped<SiteModeService>();
 builder.Services.AddScoped<TagAdminService>();
-builder.Services.AddScoped<CategoryAdminService>();
-builder.Services.AddScoped<ContentModerationService>();
-builder.Services.AddScoped<ReportService>();
-builder.Services.AddScoped<AdminUserService>();
-builder.Services.AddScoped<InviteAdminService>();
-builder.Services.AddScoped<AuditAdminService>();
 builder.Services.AddScoped<ProfileSettingsService>();
-builder.Services.AddScoped<ImageUploadService>();
 builder.Services.Configure<GitHubOAuthOptions>(builder.Configuration.GetSection("GitHub"));
 builder.Services.AddScoped<GitHubOAuthStateProtector>();
 builder.Services.AddHttpClient<GitHubOAuthService>();
-builder.Services.AddScoped<ServiceAccountAdminService>();
-builder.Services.AddScoped<AiSettingsService>();
-builder.Services.AddScoped<AiBudgetService>();
 builder.Services.AddScoped<AiQualityService>();
 builder.Services.AddScoped<SensitiveWordAdminService>();
 builder.Services.AddScoped<SystemHealthService>();
 builder.Services.AddScoped<AccountDeletionService>();
 builder.Services.AddScoped<AppealService>();
-builder.Services.AddScoped<PublicContentService>();
-builder.Services.AddScoped<PublicSearchService>();
-builder.Services.Configure<PublicSearchOptions>(builder.Configuration.GetSection("PublicSearch"));
 builder.Services.AddScoped<PublicDiscoveryService>();
-builder.Services.AddScoped<PostWriteService>();
-builder.Services.AddScoped<CommentWriteService>();
-builder.Services.AddScoped<LikeService>();
-builder.Services.AddScoped<AcceptanceService>();
 builder.Services.AddSingleton<PublicSiteLinks>();
 builder.Services.Configure<AccountSecurityOptions>(builder.Configuration.GetSection("Account"));
 builder.Services.AddScoped<AuditRequestContextFactory>();
@@ -199,16 +181,10 @@ builder.Services.AddSingleton<ServiceTokenRevealCache>();
 builder.Services.AddSingleton<EditorDraftStore>();
 builder.Services.AddSingleton<CommentDraftStore>();
 builder.Services.AddScoped<IAuthorizationHandler, AdminAuthorizationHandler>();
-builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.Configure<CopyCounterOptions>(builder.Configuration.GetSection("CopyCounter"));
 builder.Services.Configure<ViewCounterOptions>(builder.Configuration.GetSection("ViewCounter"));
-builder.Services.Configure<DeviceVerificationOptions>(
-    builder.Configuration.GetSection("DeviceVerification"));
-builder.Services.Configure<RetentionOptions>(builder.Configuration.GetSection("Retention"));
 builder.Services.Configure<HealthOptions>(builder.Configuration.GetSection("Health"));
 builder.Services.AddSingleton<BackupStatusProvider>();
-builder.Services.AddSingleton<DeviceVerificationFailureTracker>();
-builder.Services.AddScoped<DeviceVerificationService>();
 builder.Services.AddSingleton<DeviceChallengeRevealCache>();
 builder.Services.Configure<AdminBootstrapOptions>(builder.Configuration.GetSection("Auth"));
 builder.Services.AddAntiforgery(options =>

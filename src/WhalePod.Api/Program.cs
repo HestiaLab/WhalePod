@@ -21,6 +21,7 @@ using Microsoft.Extensions.Options;
 
 using WhalePod.Api.Endpoints;
 using WhalePod.Api.Services;
+using WhalePod.Infrastructure.DependencyInjection;
 using WhalePod.Infrastructure.Email;
 using WhalePod.Infrastructure.Persistence;
 using WhalePod.Infrastructure.Services;
@@ -114,49 +115,24 @@ builder.Services.AddDataProtection()
     .PersistKeysToFileSystem(new DirectoryInfo(keysDirectory));
 
 builder.Services.AddOpenApi();
-builder.Services.AddWhalePodDbContext(connectionString);
-builder.Services.AddWhalePodMediaStorage(
+builder.Services.AddWhalePodSharedServices(
     builder.Configuration,
     builder.Environment.ContentRootPath,
-    builder.Environment.IsDevelopment());
-builder.Services.AddWhalePodEmail(
-    builder.Configuration,
     builder.Environment.IsDevelopment(),
-    includeTransport: true);
-builder.Services.AddHttpContextAccessor();
-builder.Services.AddMemoryCache();
+    connectionString,
+    includeEmailTransport: true);
 builder.Services.Configure<DeviceVerificationOptions>(
     builder.Configuration.GetSection("DeviceVerification"));
 builder.Services.Configure<RetentionOptions>(builder.Configuration.GetSection("Retention"));
-builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<DeviceVerificationFailureTracker>();
-builder.Services.AddScoped<DeviceVerificationService>();
-builder.Services.AddHostedService<DeviceChallengeCleanupWorker>();
-builder.Services.AddScoped<PublicContentService>();
-builder.Services.AddScoped<PublicSearchService>();
 builder.Services.Configure<PublicSearchOptions>(builder.Configuration.GetSection("PublicSearch"));
-builder.Services.AddScoped<AdminAccessService>();
-builder.Services.AddScoped<SessionValidator>();
-builder.Services.AddScoped<ServiceAccountAdminService>();
-builder.Services.AddScoped<AiSettingsService>();
-builder.Services.AddScoped<AiBudgetService>();
+
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddMemoryCache();
+builder.Services.AddHostedService<DeviceChallengeCleanupWorker>();
 builder.Services.AddScoped<AgentModerationService>();
 builder.Services.AddScoped<AgentFailureRecorder>();
-builder.Services.AddScoped<SiteModeService>();
-builder.Services.AddScoped<ActorGuard>();
-builder.Services.AddScoped<PostWriteService>();
-builder.Services.AddScoped<CommentWriteService>();
-builder.Services.AddScoped<LikeService>();
-builder.Services.AddScoped<AcceptanceService>();
 builder.Services.AddScoped<NotificationService>();
-builder.Services.AddScoped<ContentModerationService>();
-builder.Services.AddScoped<AdminUserService>();
-builder.Services.AddScoped<ReportService>();
-builder.Services.AddScoped<InviteAdminService>();
-builder.Services.AddScoped<CategoryAdminService>();
-builder.Services.AddScoped<AuditAdminService>();
 builder.Services.AddScoped<AuthorContentService>();
-builder.Services.AddScoped<ImageUploadService>();
 builder.Services.AddScoped<MediaCleanupService>();
 builder.Services.AddScoped<RetentionCleanupService>();
 builder.Services.AddScoped<ApiAuditContextFactory>();
