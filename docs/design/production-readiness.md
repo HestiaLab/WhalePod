@@ -67,7 +67,7 @@ Operations__Backup__StatusFilePath=/var/lib/whalepod/backup-status.json
 
 ## 3. 数据库迁移与发布顺序
 
-前置：完成备份、迁移评审与预发演练；迁移脚本只向前兼容。
+前置：完成备份、迁移评审与预发演练；迁移脚本只向前兼容。首个迁移 `EnsureCitextExtension` 会执行 `CREATE EXTENSION IF NOT EXISTS citext`；若应用角色无该权限，需由 DBA 预先创建扩展。
 
 ```bash
 export WHALEPOD_DB_CONNECTION="Host=<host>;Port=5432;Database=<db>;Username=<user>;Password=<secret>;SSL Mode=Require"

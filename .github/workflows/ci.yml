@@ -51,6 +51,7 @@ jobs:
           container=$(docker ps --format '{{.ID}} {{.Image}}' | awk '$2 ~ /postgres/ {print $1; exit}')
           test -n "$container"
           docker exec "$container" psql -U postgres -d whalepod_test -c "CREATE EXTENSION IF NOT EXISTS citext;"
+          docker exec "$container" psql -U postgres -d template1 -c "CREATE EXTENSION IF NOT EXISTS citext;"
 
       - name: 安装 .NET SDK
         uses: actions/setup-dotnet@v4.3.1
