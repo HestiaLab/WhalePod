@@ -30,6 +30,7 @@ public sealed class ModerationTask
     public short Priority { get; set; }
     public JsonDocument RiskHintsJson { get; set; } = JsonDocument.Parse("[]");
     public Guid? ClaimedByAgentInstanceId { get; set; }
+    public Guid? LeaseToken { get; set; }
     public DateTimeOffset? ClaimedAt { get; set; }
     public DateTimeOffset? LeaseExpiresAt { get; set; }
     public DateTimeOffset? TaskExpiresAt { get; set; }

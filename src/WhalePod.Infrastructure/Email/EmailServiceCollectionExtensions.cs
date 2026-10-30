@@ -66,13 +66,13 @@ public static class EmailServiceCollectionExtensions
             throw new InvalidOperationException("Email:Provider must be Smtp outside Development.");
         }
 
-        ValidatePublicBaseUrl(options.PublicBaseUrl);
+        ValidatePublicBaseUrl(options.PublicBaseUrl, isDevelopment);
         ValidateSecret(options.SuppressionHashSecret, "Email:SuppressionHashSecret");
         ValidateSecret(options.UnsubscribeSecret, "Email:UnsubscribeSecret");
         if (string.Equals(provider, EmailProviders.Smtp, StringComparison.OrdinalIgnoreCase)
             && (includeTransport || !isDevelopment))
         {
-            ValidateSmtp(options.Smtp);
+            ValidateSmtp(options.Smtp, isDevelopment);
         }
 
         services.AddSingleton<IOptions<EmailOptions>>(Options.Create(options));
@@ -99,13 +99,18 @@ public static class EmailServiceCollectionExtensions
         return services;
     }
 
-    private static void ValidatePublicBaseUrl(string publicBaseUrl)
+    private static void ValidatePublicBaseUrl(string publicBaseUrl, bool isDevelopment)
     {
         if (string.IsNullOrWhiteSpace(publicBaseUrl)
             || !Uri.TryCreate(publicBaseUrl, UriKind.Absolute, out var uri)
             || uri.Scheme is not ("http" or "https"))
         {
             throw new InvalidOperationException("Email:PublicBaseUrl must be an absolute HTTP(S) URL.");
+        }
+
+        if (!isDevelopment && uri.Scheme != "https")
+        {
+            throw new InvalidOperationException("Email:PublicBaseUrl must use HTTPS outside Development.");
         }
     }
 
@@ -117,7 +122,7 @@ public static class EmailServiceCollectionExtensions
         }
     }
 
-    private static void ValidateSmtp(SmtpEmailOptions smtp)
+    private static void ValidateSmtp(SmtpEmailOptions smtp, bool isDevelopment)
     {
         if (string.IsNullOrWhiteSpace(smtp.Host)
             || smtp.Port is < 1 or > 65535
@@ -126,6 +131,16 @@ public static class EmailServiceCollectionExtensions
         {
             throw new InvalidOperationException(
                 "Email:Smtp requires Host, Port, and a valid FromAddress when Provider=Smtp.");
+        }
+
+        if (!isDevelopment)
+        {
+            var security = (smtp.Security ?? string.Empty).Trim().ToLowerInvariant();
+            if (security is "" or "none" or "auto" or "starttlswhenavailable")
+            {
+                throw new InvalidOperationException(
+                    "Email:Smtp:Security must be StartTls or SSL outside Development.");
+            }
         }
     }
 

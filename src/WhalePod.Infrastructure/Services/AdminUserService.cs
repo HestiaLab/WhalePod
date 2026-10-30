@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 
 using WhalePod.Domain;
 using WhalePod.Domain.Accounts;
+using WhalePod.Domain.Moderation;
 using WhalePod.Infrastructure.Email;
 using WhalePod.Infrastructure.Persistence;
 
@@ -229,6 +230,25 @@ public sealed class AdminUserService(
             target.StatusReason = normalizedStatus == UserStatuses.Active ? null : normalizedReason;
             target.StatusExpiresAt = normalizedStatus == UserStatuses.Active ? null : normalizedExpiry;
             target.UpdatedAt = now;
+
+            if (normalizedStatus is UserStatuses.Muted or UserStatuses.Banned)
+            {
+                db.ModerationActions.Add(new ModerationAction
+                {
+                    TargetType = "user",
+                    TargetId = target.Id,
+                    ActorType = ModerationActorTypes.User,
+                    ActorId = actorId,
+                    Action = normalizedStatus == UserStatuses.Muted
+                        ? ModerationActions.Mute
+                        : ModerationActions.Ban,
+                    FromStatus = previousStatus,
+                    ToStatus = normalizedStatus,
+                    Reason = normalizedReason,
+                    ContentVersion = 1,
+                    CreatedAt = now
+                });
+            }
 
             db.AuditLogs.Add(AuditLogWriter.CreateUserAction(
                 audit,

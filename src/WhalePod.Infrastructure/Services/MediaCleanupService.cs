@@ -15,6 +15,8 @@ public sealed class MediaCleanupService(
     TimeProvider timeProvider,
     ILogger<MediaCleanupService> logger)
 {
+    private const int QuarantineAfterAttempts = 5;
+
     public async Task<MediaCleanupResult> CleanupOnceAsync(
         int batchSize,
         CancellationToken cancellationToken = default)
@@ -23,9 +25,11 @@ public sealed class MediaCleanupService(
         var limit = Math.Clamp(batchSize, 1, 500);
         var candidateIds = await db.MediaUploads
             .AsNoTracking()
-            .Where(upload => upload.Status == MediaUploadStatuses.Deleted
-                || (upload.Status == MediaUploadStatuses.Temp && upload.ExpiresAt <= now))
-            .OrderBy(upload => upload.ExpiresAt)
+            .Where(upload => (upload.Status == MediaUploadStatuses.Deleted
+                    || (upload.Status == MediaUploadStatuses.Temp && upload.ExpiresAt <= now))
+                && (upload.NextAttemptAt == null || upload.NextAttemptAt <= now))
+            .OrderBy(upload => upload.NextAttemptAt ?? DateTimeOffset.MinValue)
+            .ThenBy(upload => upload.ExpiresAt)
             .ThenBy(upload => upload.Id)
             .Take(limit)
             .Select(upload => upload.Id)
@@ -41,7 +45,8 @@ public sealed class MediaCleanupService(
                 .SingleOrDefaultAsync(cancellationToken);
             if (upload is null
                 || (upload.Status != MediaUploadStatuses.Deleted
-                    && (upload.Status != MediaUploadStatuses.Temp || upload.ExpiresAt > now)))
+                    && (upload.Status != MediaUploadStatuses.Temp || upload.ExpiresAt > now))
+                || (upload.NextAttemptAt is not null && upload.NextAttemptAt > now))
             {
                 continue;
             }
@@ -53,10 +58,38 @@ public sealed class MediaCleanupService(
             catch (Exception exception)
             {
                 failed++;
-                logger.LogWarning(
-                    exception,
-                    "Failed to delete expired media object {MediaUploadId}; it will be retried.",
-                    upload.Id);
+                upload.CleanupAttempts++;
+                upload.NextAttemptAt = upload.CleanupAttempts >= QuarantineAfterAttempts
+                    ? now.AddDays(7)
+                    : now.Add(Backoff(upload.CleanupAttempts));
+                if (upload.CleanupAttempts == QuarantineAfterAttempts)
+                {
+                    db.AuditLogs.Add(AuditLogWriter.CreateSystemAction(
+                        "media.cleanup_quarantined",
+                        "media_upload",
+                        upload.Id,
+                        new
+                        {
+                            attempts = upload.CleanupAttempts,
+                            nextAttemptAt = upload.NextAttemptAt
+                        },
+                        now));
+                    logger.LogError(
+                        exception,
+                        "Media object {MediaUploadId} failed {Attempts} cleanup attempts and was quarantined until {NextAttemptAt}.",
+                        upload.Id,
+                        upload.CleanupAttempts,
+                        upload.NextAttemptAt);
+                }
+                else
+                {
+                    logger.LogWarning(
+                        exception,
+                        "Failed to delete expired media object {MediaUploadId}; retrying at {NextAttemptAt}.",
+                        upload.Id,
+                        upload.NextAttemptAt);
+                }
+
                 continue;
             }
 
@@ -71,5 +104,11 @@ public sealed class MediaCleanupService(
             deleted,
             failed);
         return new MediaCleanupResult(deleted, failed);
+    }
+
+    private static TimeSpan Backoff(int attempts)
+    {
+        var minutes = Math.Min(360, 5 * Math.Pow(2, Math.Clamp(attempts - 1, 0, 10)));
+        return TimeSpan.FromMinutes(minutes);
     }
 }

@@ -80,6 +80,12 @@ public sealed class AppealService(
                 throw ApiProblemException.Conflict("当前没有可申诉的账号处罚。");
             }
 
+            relatedActionId = await LatestPenaltyActionAsync(user.Id, cancellationToken);
+            if (relatedActionId is null)
+            {
+                throw ApiProblemException.Conflict("当前账号处罚缺少处罚记录，暂不能申诉，请联系管理员。");
+            }
+
             targetTitle = "账号处罚";
         }
         else if (normalizedType == AppealTargetTypes.Post)
@@ -202,14 +208,17 @@ public sealed class AppealService(
 
     public async Task<IReadOnlyList<AdminAppealView>> GetPendingAsync(
         Guid actorId,
+        int page = 1,
         CancellationToken cancellationToken = default)
     {
         await actorGuard.RequireAdminAsync(actorId, cancellationToken);
+        page = Math.Clamp(page, 1, 100_000);
         var appeals = await db.Appeals
             .AsNoTracking()
             .Where(appeal => appeal.Status == AppealStatuses.Pending)
             .OrderBy(appeal => appeal.CreatedAt)
             .ThenBy(appeal => appeal.Id)
+            .Skip((page - 1) * 50)
             .Take(50)
             .ToListAsync(cancellationToken);
         var appellantIds = appeals.Select(appeal => appeal.AppellantId).Distinct().ToList();
@@ -253,9 +262,9 @@ public sealed class AppealService(
         }
 
         var note = (command.Note ?? string.Empty).Trim();
-        if (RuneHelper.Count(note) is < 1 or > 1000 || note.Contains('\0'))
+        if (RuneHelper.Count(note) is < 1 or > 500 || note.Contains('\0'))
         {
-            throw ApiProblemException.Validation("note", "复核说明必须为 1–1000 个字符。");
+            throw ApiProblemException.Validation("note", "复核说明必须为 1–500 个字符。");
         }
 
         var now = timeProvider.GetUtcNow();
@@ -278,14 +287,34 @@ public sealed class AppealService(
             throw ApiProblemException.Forbidden("self_review", "不能复核自己的申诉。");
         }
 
-        var appellant = await db.Users
-            .SingleOrDefaultAsync(user => user.Id == appeal.AppellantId, cancellationToken);
-        if (appellant is null || appellant.DeletedAt is not null)
+        if (appeal.TargetType == AppealTargetTypes.AccountPenalty)
         {
-            throw ApiProblemException.NotFound("申诉人不存在。");
+            await db.Database.ExecuteSqlRawAsync(
+                "SELECT pg_advisory_xact_lock(7210521)",
+                cancellationToken);
         }
 
+        var appellant = await db.Users
+            .SingleOrDefaultAsync(user => user.Id == appeal.AppellantId, cancellationToken);
         var accepted = outcome == AppealStatuses.Accepted;
+        if (accepted && (appellant is null || appellant.DeletedAt is not null))
+        {
+            throw ApiProblemException.Conflict("申诉人已注销，不能通过申诉；请驳回结案。");
+        }
+
+        if (!accepted && (appellant is null || appellant.DeletedAt is not null))
+        {
+            return await RejectAppealAsync(
+                appeal,
+                null,
+                actorId,
+                audit,
+                note,
+                "appellant_deleted",
+                now,
+                cancellationToken);
+        }
+        var appellantUser = appellant!;
         string targetType;
         Guid targetId;
         string? targetUrl;
@@ -293,17 +322,55 @@ public sealed class AppealService(
         if (appeal.TargetType == AppealTargetTypes.Post)
         {
             var post = await db.Posts
-                .SingleOrDefaultAsync(candidate => candidate.Id == appeal.TargetId, cancellationToken);
+                .FromSqlInterpolated($"SELECT * FROM post WHERE id = {appeal.TargetId} FOR UPDATE")
+                .SingleOrDefaultAsync(cancellationToken);
             if (post is null || post.DeletedAt is not null)
             {
-                throw ApiProblemException.NotFound("申诉目标不存在或已删除。");
+                if (accepted)
+                {
+                    throw ApiProblemException.Conflict("申诉目标已删除，无法恢复；请驳回结案。");
+                }
+
+                return await RejectAppealAsync(
+                    appeal,
+                    appellantUser,
+                    actorId,
+                    audit,
+                    note,
+                    "target_deleted",
+                    now,
+                    cancellationToken);
             }
 
             if (accepted)
             {
                 if (post.ModerationStatus != ModerationStatuses.Rejected)
                 {
-                    throw ApiProblemException.Conflict("内容状态已变化，不能通过该申诉。");
+                    throw await InvalidateAppealAsync(
+                        appeal,
+                        appellantUser,
+                        actorId,
+                        audit,
+                        "内容状态已变化（可能已被编辑或重新裁决）。",
+                        now,
+                        cancellationToken);
+                }
+
+                var latestRejectActionId = await LatestRejectActionAsync(
+                    ModerationTargetTypes.Post,
+                    post.Id,
+                    cancellationToken);
+                if (appeal.RelatedActionId is null
+                    || latestRejectActionId != appeal.RelatedActionId)
+                {
+                    throw await InvalidateAppealAsync(
+                        appeal,
+                        appellantUser,
+                        actorId,
+                        audit,
+                        "原驳回裁决已被后续裁决覆盖。",
+                        now,
+                        cancellationToken);
                 }
 
                 var fromStatus = post.ModerationStatus;
@@ -333,10 +400,24 @@ public sealed class AppealService(
         else if (appeal.TargetType == AppealTargetTypes.Comment)
         {
             var comment = await db.Comments
-                .SingleOrDefaultAsync(candidate => candidate.Id == appeal.TargetId, cancellationToken);
+                .FromSqlInterpolated($"SELECT * FROM comment WHERE id = {appeal.TargetId} FOR UPDATE")
+                .SingleOrDefaultAsync(cancellationToken);
             if (comment is null || comment.DeletedAt is not null)
             {
-                throw ApiProblemException.NotFound("申诉目标不存在或已删除。");
+                if (accepted)
+                {
+                    throw ApiProblemException.Conflict("申诉目标已删除，无法恢复；请驳回结案。");
+                }
+
+                return await RejectAppealAsync(
+                    appeal,
+                    appellantUser,
+                    actorId,
+                    audit,
+                    note,
+                    "target_deleted",
+                    now,
+                    cancellationToken);
             }
 
             var post = await db.Posts
@@ -345,14 +426,51 @@ public sealed class AppealService(
                     candidate.Id == comment.PostId && candidate.DeletedAt == null, cancellationToken);
             if (post is null)
             {
-                throw ApiProblemException.NotFound("申诉目标所属帖子不存在或已删除。");
+                if (accepted)
+                {
+                    throw ApiProblemException.Conflict("申诉目标所属帖子已删除，无法恢复；请驳回结案。");
+                }
+
+                return await RejectAppealAsync(
+                    appeal,
+                    appellantUser,
+                    actorId,
+                    audit,
+                    note,
+                    "target_deleted",
+                    now,
+                    cancellationToken);
             }
 
             if (accepted)
             {
                 if (comment.ModerationStatus != ModerationStatuses.Rejected)
                 {
-                    throw ApiProblemException.Conflict("内容状态已变化，不能通过该申诉。");
+                    throw await InvalidateAppealAsync(
+                        appeal,
+                        appellantUser,
+                        actorId,
+                        audit,
+                        "评论状态已变化（可能已被编辑或重新裁决）。",
+                        now,
+                        cancellationToken);
+                }
+
+                var latestRejectActionId = await LatestRejectActionAsync(
+                    ModerationTargetTypes.Comment,
+                    comment.Id,
+                    cancellationToken);
+                if (appeal.RelatedActionId is null
+                    || latestRejectActionId != appeal.RelatedActionId)
+                {
+                    throw await InvalidateAppealAsync(
+                        appeal,
+                        appellantUser,
+                        actorId,
+                        audit,
+                        "原驳回裁决已被后续裁决覆盖。",
+                        now,
+                        cancellationToken);
                 }
 
                 var fromStatus = comment.ModerationStatus;
@@ -383,22 +501,45 @@ public sealed class AppealService(
         {
             if (accepted)
             {
-                if (appellant.Status is not (UserStatuses.Muted or UserStatuses.Banned))
+                var latestPenaltyActionId = await LatestPenaltyActionAsync(
+                    appellantUser.Id,
+                    cancellationToken);
+                if (appeal.RelatedActionId is null
+                    || latestPenaltyActionId != appeal.RelatedActionId)
                 {
-                    throw ApiProblemException.Conflict("账号处罚状态已变化，不能通过该申诉。");
+                    throw await InvalidateAppealAsync(
+                        appeal,
+                        appellantUser,
+                        actorId,
+                        audit,
+                        "账号处罚已被后续处罚覆盖。",
+                        now,
+                        cancellationToken);
                 }
 
-                var previousStatus = appellant.Status;
-                appellant.Status = UserStatuses.Active;
-                appellant.StatusReason = null;
-                appellant.StatusExpiresAt = null;
-                appellant.UpdatedAt = now;
+                if (appellantUser.Status is not (UserStatuses.Muted or UserStatuses.Banned))
+                {
+                    throw await InvalidateAppealAsync(
+                        appeal,
+                        appellantUser,
+                        actorId,
+                        audit,
+                        "账号处罚状态已变化。",
+                        now,
+                        cancellationToken);
+                }
+
+                var previousStatus = appellantUser.Status;
+                appellantUser.Status = UserStatuses.Active;
+                appellantUser.StatusReason = null;
+                appellantUser.StatusExpiresAt = null;
+                appellantUser.UpdatedAt = now;
                 restored = true;
                 db.AuditLogs.Add(AuditLogWriter.CreateUserAction(
                     audit,
                     "user.status_changed",
                     "user",
-                    appellant.Id,
+                    appellantUser.Id,
                     new
                     {
                         previousStatus,
@@ -410,7 +551,7 @@ public sealed class AppealService(
             }
 
             targetType = "user";
-            targetId = appellant.Id;
+            targetId = appellantUser.Id;
             targetUrl = null;
         }
 
@@ -436,13 +577,13 @@ public sealed class AppealService(
         };
         var dedupeKey = $"appeal-result:{appeal.Id:N}";
         db.Notifications.Add(NotificationWriter.Create(
-            appellant.Id,
+            appellantUser.Id,
             NotificationTypes.AppealResult,
             notificationPayload,
             dedupeKey,
             now));
         await emailQueue.EnqueueForNotificationAsync(
-            appellant.Id,
+            appellantUser.Id,
             NotificationTypes.AppealResult,
             notificationPayload,
             dedupeKey,
@@ -468,6 +609,149 @@ public sealed class AppealService(
         await transaction.CommitAsync(cancellationToken);
         var titles = await LoadTargetTitlesAsync([appeal], cancellationToken);
         return ToView(appeal, titles.GetValueOrDefault((appeal.TargetType, appeal.TargetId)));
+    }
+
+    private async Task<Guid?> LatestPenaltyActionAsync(
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        return await db.ModerationActions
+            .AsNoTracking()
+            .Where(action => action.TargetType == "user"
+                && action.TargetId == userId
+                && (action.Action == ModerationActions.Mute || action.Action == ModerationActions.Ban))
+            .OrderByDescending(action => action.CreatedAt)
+            .ThenByDescending(action => action.Id)
+            .Select(action => (Guid?)action.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    private async Task<AppealView> RejectAppealAsync(
+        Appeal appeal,
+        User? appellant,
+        Guid actorId,
+        AuditContext audit,
+        string note,
+        string reason,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        appeal.Status = AppealStatuses.Rejected;
+        appeal.ReviewedBy = actorId;
+        appeal.ReviewNote = note;
+        appeal.ResolvedAt = now;
+        db.AuditLogs.Add(AuditLogWriter.CreateUserAction(
+            audit,
+            "appeal.rejected",
+            "appeal",
+            appeal.Id,
+            new
+            {
+                targetType = appeal.TargetType,
+                targetId = appeal.TargetId,
+                reason,
+                reviewNote = note
+            },
+            now));
+
+        if (appellant is not null)
+        {
+            var payload = new
+            {
+                summary = "你的申诉未通过复核。",
+                targetType = appeal.TargetType == AppealTargetTypes.AccountPenalty
+                    ? "user"
+                    : appeal.TargetType,
+                targetId = appeal.TargetId,
+                targetUrl = (string?)null,
+                action = "rejected"
+            };
+            var dedupeKey = $"appeal-result:{appeal.Id:N}";
+            db.Notifications.Add(NotificationWriter.Create(
+                appellant.Id,
+                NotificationTypes.AppealResult,
+                payload,
+                dedupeKey,
+                now));
+            await emailQueue.EnqueueForNotificationAsync(
+                appellant.Id,
+                NotificationTypes.AppealResult,
+                payload,
+                dedupeKey,
+                now,
+                cancellationToken);
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        if (db.Database.CurrentTransaction is not null)
+        {
+            await db.Database.CurrentTransaction.CommitAsync(cancellationToken);
+        }
+
+        var titles = await LoadTargetTitlesAsync([appeal], cancellationToken);
+        return ToView(appeal, titles.GetValueOrDefault((appeal.TargetType, appeal.TargetId)));
+    }
+
+    private async Task<ApiProblemException> InvalidateAppealAsync(
+        Appeal appeal,
+        User appellant,
+        Guid actorId,
+        AuditContext audit,
+        string detail,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        appeal.Status = AppealStatuses.Rejected;
+        appeal.ReviewedBy = actorId;
+        appeal.ReviewNote = $"申诉已失效：{detail}";
+        appeal.ResolvedAt = now;
+        db.AuditLogs.Add(AuditLogWriter.CreateUserAction(
+            audit,
+            "appeal.invalidated",
+            "appeal",
+            appeal.Id,
+            new
+            {
+                targetType = appeal.TargetType,
+                targetId = appeal.TargetId,
+                reason = detail
+            },
+            now));
+
+        var payload = new
+        {
+            summary = "你的申诉已失效，请针对最新处罚或裁决重新提交。",
+            targetType = appeal.TargetType == AppealTargetTypes.AccountPenalty
+                ? "user"
+                : appeal.TargetType,
+            targetId = appeal.TargetId,
+            targetUrl = (string?)null,
+            action = "invalidated"
+        };
+        var dedupeKey = $"appeal-result:{appeal.Id:N}";
+        db.Notifications.Add(NotificationWriter.Create(
+            appellant.Id,
+            NotificationTypes.AppealResult,
+            payload,
+            dedupeKey,
+            now));
+        await emailQueue.EnqueueForNotificationAsync(
+            appellant.Id,
+            NotificationTypes.AppealResult,
+            payload,
+            dedupeKey,
+            now,
+            cancellationToken);
+
+        await db.SaveChangesAsync(cancellationToken);
+        if (db.Database.CurrentTransaction is not null)
+        {
+            await db.Database.CurrentTransaction.CommitAsync(cancellationToken);
+        }
+
+        return ApiProblemException.Conflict(
+            $"申诉已失效：{detail}",
+            new { appealId = appeal.Id });
     }
 
     private async Task<Guid?> LatestRejectActionAsync(

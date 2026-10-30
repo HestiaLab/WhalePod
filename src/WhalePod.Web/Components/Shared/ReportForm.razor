@@ -1,0 +1,41 @@
+@using WhalePod.Domain
+<form method="post" action="/reports" class="report-form">
+    <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+    <input type="hidden" name="targetType" value="@TargetType" />
+    <input type="hidden" name="targetId" value="@TargetId" />
+    <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+    <p>
+        <label for="@ReasonId">举报原因</label>
+        <select id="@ReasonId" name="reason" required>
+            <option value="@ReportReasons.Spam">垃圾广告</option>
+            <option value="@ReportReasons.Harassment">人身攻击</option>
+            <option value="@ReportReasons.Misclassified">分类错误</option>
+            <option value="@ReportReasons.Plagiarism">抄袭未注明</option>
+            <option value="@ReportReasons.Other">其他</option>
+        </select>
+    </p>
+    <p>
+        <label for="@DetailId">补充说明（可选，最多 1000 字）</label>
+        <textarea id="@DetailId" name="detail" maxlength="1000" rows="3"></textarea>
+    </p>
+    <button type="submit" class="button button-compact">提交举报</button>
+    <p class="muted">举报人身份不会公开。</p>
+</form>
+
+@code {
+    [Parameter, EditorRequired]
+    public string TargetType { get; set; } = string.Empty;
+
+    [Parameter]
+    public Guid TargetId { get; set; }
+
+    [Parameter, EditorRequired]
+    public string ReturnUrl { get; set; } = "/";
+
+    [Parameter, EditorRequired]
+    public string Token { get; set; } = string.Empty;
+
+    private string ReasonId => $"report-reason-{TargetType}-{TargetId:N}";
+
+    private string DetailId => $"report-detail-{TargetType}-{TargetId:N}";
+}

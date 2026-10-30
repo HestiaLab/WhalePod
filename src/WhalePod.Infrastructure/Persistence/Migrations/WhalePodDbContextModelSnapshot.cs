@@ -440,6 +440,12 @@ namespace WhalePod.Infrastructure.Persistence.Migrations
                         .HasDefaultValue("member")
                         .HasColumnName("role");
 
+                    b.Property<int>("SessionVersion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("session_version");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -538,6 +544,10 @@ namespace WhalePod.Infrastructure.Persistence.Migrations
                         .HasMaxLength(80)
                         .HasColumnType("character varying(80)")
                         .HasColumnName("last_error_code");
+
+                    b.Property<Guid?>("LeaseToken")
+                        .HasColumnType("uuid")
+                        .HasColumnName("lease_token");
 
                     b.Property<DateTimeOffset?>("LockedUntil")
                         .HasColumnType("timestamp with time zone")
@@ -785,6 +795,12 @@ namespace WhalePod.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(40)")
                         .HasColumnName("name");
 
+                    b.Property<bool>("RequiresKernel")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("requires_kernel");
+
                     b.Property<string>("Slug")
                         .IsRequired()
                         .HasMaxLength(40)
@@ -968,6 +984,10 @@ namespace WhalePod.Infrastructure.Persistence.Migrations
                         .HasColumnType("bigint")
                         .HasColumnName("byte_size");
 
+                    b.Property<int>("CleanupAttempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("cleanup_attempts");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
@@ -989,6 +1009,10 @@ namespace WhalePod.Infrastructure.Persistence.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)")
                         .HasColumnName("mime_type");
+
+                    b.Property<DateTimeOffset?>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_attempt_at");
 
                     b.Property<Guid>("OwnerId")
                         .HasColumnType("uuid")
@@ -1029,12 +1053,18 @@ namespace WhalePod.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("uq_media_upload_url");
 
+                    b.HasIndex("NextAttemptAt", "ExpiresAt")
+                        .HasDatabaseName("ix_media_upload_retry")
+                        .HasFilter("status IN ('temp','deleted')");
+
                     b.HasIndex("OwnerId", "Status")
                         .HasDatabaseName("ix_media_upload_owner_status");
 
                     b.ToTable("media_upload", null, t =>
                         {
                             t.HasCheckConstraint("ck_media_upload_attached_post", "status <> 'attached' OR post_id IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_media_upload_attempts", "cleanup_attempts >= 0");
 
                             t.HasCheckConstraint("ck_media_upload_dimensions", "width > 0 AND height > 0");
 
@@ -1722,17 +1752,17 @@ namespace WhalePod.Infrastructure.Persistence.Migrations
 
                     b.ToTable("moderation_action", null, t =>
                         {
-                            t.HasCheckConstraint("ck_moderation_action_action", "action IN ('approve','reject','hide','restore','delete','escalate')");
+                            t.HasCheckConstraint("ck_moderation_action_action", "action IN ('approve','reject','hide','restore','delete','escalate','mute','ban')");
 
                             t.HasCheckConstraint("ck_moderation_action_actor", "actor_type IN ('user','system')");
 
-                            t.HasCheckConstraint("ck_moderation_action_from_status", "from_status IN ('pending','approved','rejected','hidden','deleted')");
+                            t.HasCheckConstraint("ck_moderation_action_from_status", "from_status IN ('pending','approved','rejected','hidden','deleted','active','muted','banned')");
 
                             t.HasCheckConstraint("ck_moderation_action_reason", "action NOT IN ('reject','hide','delete','escalate') OR (reason IS NOT NULL AND length(reason) > 0)");
 
-                            t.HasCheckConstraint("ck_moderation_action_target", "target_type IN ('post','comment')");
+                            t.HasCheckConstraint("ck_moderation_action_target", "target_type IN ('post','comment','user')");
 
-                            t.HasCheckConstraint("ck_moderation_action_to_status", "to_status IN ('pending','approved','rejected','hidden','deleted')");
+                            t.HasCheckConstraint("ck_moderation_action_to_status", "to_status IN ('pending','approved','rejected','hidden','deleted','active','muted','banned')");
 
                             t.HasCheckConstraint("ck_moderation_action_version", "content_version > 0");
                         });
@@ -2029,6 +2059,10 @@ namespace WhalePod.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset?>("LeaseExpiresAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("lease_expires_at");
+
+                    b.Property<Guid?>("LeaseToken")
+                        .HasColumnType("uuid")
+                        .HasColumnName("lease_token");
 
                     b.Property<short>("Priority")
                         .HasColumnType("smallint")

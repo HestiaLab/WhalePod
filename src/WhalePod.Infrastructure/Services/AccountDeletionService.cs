@@ -25,7 +25,8 @@ public sealed record AccountDeletionResult(
     int CommentsDeleted,
     int DevicesRevoked,
     int ExternalLoginsRemoved,
-    bool GitHubHmacRetained);
+    bool GitHubHmacRetained,
+    int MediaDeleted);
 
 public sealed class AccountDeletionService(
     WhalePodDbContext db,
@@ -100,12 +101,34 @@ public sealed class AccountDeletionService(
 
         var postsDeleted = 0;
         var commentsDeleted = 0;
+        var mediaDeleted = 0;
         if (deleteContent)
         {
             var posts = await db.Posts
-                .Where(post => post.AuthorId == user.Id && post.DeletedAt == null)
+                .Where(post => post.AuthorId == user.Id)
                 .ToListAsync(cancellationToken);
-            foreach (var post in posts)
+            var postIds = posts.Select(post => post.Id).ToList();
+            var postImages = await db.PostImages
+                .Where(image => postIds.Contains(image.PostId))
+                .ToListAsync(cancellationToken);
+            var uploadIds = postImages
+                .Select(image => image.UploadId)
+                .Distinct()
+                .ToList();
+            var uploads = await db.MediaUploads
+                .Where(upload => uploadIds.Contains(upload.Id)
+                    && upload.Status != MediaUploadStatuses.Deleted)
+                .ToListAsync(cancellationToken);
+            foreach (var upload in uploads)
+            {
+                upload.Status = MediaUploadStatuses.Deleted;
+                upload.ExpiresAt = now;
+                upload.PostId = null;
+            }
+
+            mediaDeleted += uploads.Count;
+            db.PostImages.RemoveRange(postImages);
+            foreach (var post in posts.Where(post => post.DeletedAt is null))
             {
                 post.ModerationStatus = ModerationStatuses.Deleted;
                 post.DeletedAt = now;
@@ -175,6 +198,8 @@ public sealed class AccountDeletionService(
             avatar.ExpiresAt = now;
         }
 
+        mediaDeleted += avatars.Count;
+
         emailQueue.EnqueueAccountDeleted(user.Id, user.Email, now);
 
         var retainGitHubHmac = security.GitHubHmacBlacklistEnabled
@@ -216,7 +241,8 @@ public sealed class AccountDeletionService(
                 commentsDeleted,
                 devicesRevoked = devices.Count,
                 externalLoginsRemoved = externalLogins.Count,
-                githubHmacRetained = retainGitHubHmac
+                githubHmacRetained = retainGitHubHmac,
+                mediaDeleted
             },
             now));
 
@@ -229,6 +255,7 @@ public sealed class AccountDeletionService(
             commentsDeleted,
             devices.Count,
             externalLogins.Count,
-            retainGitHubHmac);
+            retainGitHubHmac,
+            mediaDeleted);
     }
 }

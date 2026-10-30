@@ -16,17 +16,42 @@ public sealed class ActivationGateMiddleware(RequestDelegate next)
         new("/activate"),
         new("/logout"),
         new("/dev/test-login"),
-        new("/healthz"),
-        new("/_framework"),
-        new("/_blazor"),
-        new("/app.css"),
-        new("/WhalePod.Web.styles.css"),
-        new("/favicon")
+        new("/healthz")
     ];
+
+    private static readonly HashSet<string> StaticAssetExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".css",
+        ".js",
+        ".mjs",
+        ".map",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".avif",
+        ".svg",
+        ".ico",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".wasm",
+        ".dat",
+        ".blat",
+        ".pdb"
+    };
 
     public async Task InvokeAsync(HttpContext context, WhalePodDbContext db)
     {
         if (context.User.Identity?.IsAuthenticated != true)
+        {
+            await next(context);
+            return;
+        }
+
+        if (IsStaticAssetRequest(context.Request.Path))
         {
             await next(context);
             return;
@@ -90,6 +115,17 @@ public sealed class ActivationGateMiddleware(RequestDelegate next)
 
         return request.Path.StartsWithSegments("/logout")
             || request.Path.StartsWithSegments("/settings")
+            || request.Path.StartsWithSegments("/reports")
             || request.Path.StartsWithSegments("/internal/counters/copy");
+    }
+
+    private static bool IsStaticAssetRequest(PathString path)
+    {
+        if (path.StartsWithSegments("/_framework") || path.StartsWithSegments("/_blazor"))
+        {
+            return true;
+        }
+
+        return StaticAssetExtensions.Contains(Path.GetExtension(path.Value ?? string.Empty));
     }
 }

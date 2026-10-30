@@ -170,6 +170,12 @@ else
                     <textarea id="moderation-override" name="overrideReason" rows="2" maxlength="1000"></textarea>
                 </p>
             }
+            <p>
+                <label>
+                    <input type="checkbox" name="confirm" value="yes" required />
+                    我确认提交该审核动作（会立即改变内容状态）。
+                </label>
+            </p>
             <button type="submit">提交裁决</button>
         </form>
         <p class="muted">AI 只提供建议；本操作才会改变内容状态，并写入审核记录、通知与审计。</p>
@@ -196,6 +202,7 @@ else
         "validation" => "审核参数无效：驳回、隐藏、删除或升级必须填写原因。",
         "missing" => "内容不存在或已删除。",
         "forbidden" => "当前账号无权执行该审核操作。",
+        "confirm" => "请先勾选确认再提交审核动作。",
         _ => null
     };
 

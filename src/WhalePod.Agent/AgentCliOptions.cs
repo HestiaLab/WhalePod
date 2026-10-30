@@ -29,13 +29,13 @@ public sealed record AgentCliOptions(
         var modelName = Required("WHALEPOD_AGENT_MODEL_NAME");
         var modelVersion = Required("WHALEPOD_AGENT_MODEL_VERSION");
         var modelQuantization = Required("WHALEPOD_AGENT_MODEL_QUANTIZATION");
+        var allowInsecureHttp = string.Equals(
+            Environment.GetEnvironmentVariable("WHALEPOD_AGENT_ALLOW_INSECURE_HTTP"),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
         var apiBaseUrl = Environment.GetEnvironmentVariable("WHALEPOD_AGENT_API_URL")
-            ?? "http://localhost:5010";
-        if (!Uri.TryCreate(apiBaseUrl, UriKind.Absolute, out var uri)
-            || uri.Scheme is not ("http" or "https"))
-        {
-            throw new InvalidOperationException("WHALEPOD_AGENT_API_URL 必须是 HTTP(S) 绝对地址。");
-        }
+            ?? "https://localhost:5010";
+        ParseApiBaseUrl(apiBaseUrl, allowInsecureHttp);
 
         var instanceName = Environment.GetEnvironmentVariable("WHALEPOD_AGENT_INSTANCE_NAME");
         if (string.IsNullOrWhiteSpace(instanceName))
@@ -76,6 +76,28 @@ public sealed record AgentCliOptions(
             modelVersion,
             modelQuantization,
             promptVersion.Trim());
+    }
+
+    public static Uri ParseApiBaseUrl(string value, bool allowInsecureHttp)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            || uri.Scheme is not ("http" or "https"))
+        {
+            throw new InvalidOperationException("WHALEPOD_AGENT_API_URL 必须是 HTTP(S) 绝对地址。");
+        }
+
+        if (!string.IsNullOrEmpty(uri.UserInfo))
+        {
+            throw new InvalidOperationException("WHALEPOD_AGENT_API_URL 不能包含用户信息。");
+        }
+
+        if (uri.Scheme == "http" && !(allowInsecureHttp && uri.IsLoopback))
+        {
+            throw new InvalidOperationException(
+                "Agent API 默认必须使用 HTTPS；仅显式设置 WHALEPOD_AGENT_ALLOW_INSECURE_HTTP=true 且地址为回环时才允许 HTTP。");
+        }
+
+        return uri;
     }
 
     private static string Required(string name)

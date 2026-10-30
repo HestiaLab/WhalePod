@@ -16,11 +16,12 @@
 |---|---|---|
 | `ConnectionStrings:WhalePod` | 必填 | PostgreSQL 连接串；生产使用托管实例并启用 TLS |
 | `PublicSite:BaseUrl` | 非 Development 必填绝对 HTTP(S) | canonical、RSS、Sitemap 的站点根地址 |
-| `AllowedHosts` | 默认 `*` | 生产建议只允许站点域名；由反向代理/网关同时校验 Host |
+| `AllowedHosts` | Development `*`；生产必须显式域名 | 生产含 `*` 或为空会拒绝启动；由反向代理/网关同时校验 Host |
 | `DataProtection:KeysDirectory` | 非 Development 必填 | Web/API 必须共享同一持久目录；丢失会使会话/CSRF 失效 |
 | `Audit:IpHashSecret` | 非 Development ≥32 字符 | 审计 IP HMAC；不可逆 |
 | `Auth:DevLoginEnabled` | `false` | 仅 Development 可开启；生产必须关闭 |
 | `Auth:BootstrapAdminHandles` | 空 | 登录时一次性提升管理员的 handle；生产通过秘密存储注入 |
+| `Auth:AbsoluteSessionHours` | `24` | 会话绝对有效期（1–168 小时）；与 8 小时滑动过期共同生效，logout 递增 SessionVersion 使该账号全部会话失效 |
 | `GitHub:ClientId` / `GitHub:ClientSecret` | 非 Development 必填 | GitHub OAuth App 凭据；禁止提交仓库 |
 | `GitHub:CallbackPath` | `/auth/github/callback` | 必须与 GitHub App 登记的回调 HTTPS 地址同域一致 |
 | `GitHub:AllowedLogins` / `AllowedOrganizations` | 空 | 可选登录白名单；非空时未命中的账号拒绝登录 |
@@ -37,6 +38,7 @@
 | `ApiRequestLimits:MaxImageUploadRequestBytes` | `11534336`（11 MiB） | 图片上传 multipart 上限 |
 | `WebWriteRateLimit:PermitLimit` / `WindowSeconds` | `60` / `60` | Web SSR POST 表单全局限流；显式策略端点跳过 |
 | `WebRequestLimits:MaxFormBodyBytes` | `2097152`（2 MiB） | Web 表单上限；urlencoded 400、multipart 413 |
+| `WebRequestLimits:MaxImageUploadBytes` | `11534336`（11 MiB） | `/editor/images` 上传请求上限，需覆盖 10 MiB 图片与 multipart 开销 |
 | `InviteRedeemRateLimit:PermitLimit` / `WindowSeconds` | `10` / `60` | 邀请兑换按账号 + 来源地址独立限流 |
 | `PublicSearch:RateLimitPerMinute` | `30` | 公开搜索限流 |
 | `PublicSearch:TimeoutSeconds` | `3` | 公开搜索查询超时 |
@@ -44,6 +46,12 @@
 | `ViewCounter:DedupeWindowSeconds` | `600` | 浏览量去重窗口 |
 | `CopyCounter:DedupeSecret` | 非 Development ≥32 字符 | 复制计数去重 HMAC |
 | `CopyCounter:BucketSeconds` | `600` | 复制计数去重桶 |
+| `DeviceVerification:MaxActiveDevices` | `5` | 每账号活跃设备上限；完成验证在用户行锁内校验 |
+| `DeviceVerification:ChallengeTtlSeconds` / `TimestampSkewSeconds` | `300` / `300` | challenge 有效期与签名时间偏移 |
+| `DeviceVerification:MaxFailedAttempts` / `FailureWindowSeconds` / `LockoutSeconds` | `5` / `600` / `300` | 验证失败锁定策略 |
+| `DeviceVerification:ChallengeRateLimitPerMinute` / `CompleteRateLimitPerMinute` / `WriteRateLimitPerMinute` | `10` / `10` / `30` | 设备端点限流 |
+| `DeviceVerification:ChallengeRetentionHours` / `ChallengeCleanupIntervalMinutes` | `24` / `10` | challenge 清理 |
+| `AgentRateLimit:ReadPerMinute` / `WritePerMinute` / `HeartbeatPerMinute` | `120` / `60` / `12` | Agent API 读/写/心跳限流 |
 
 ## 3. 媒体存储
 
@@ -65,7 +73,7 @@
 | `Email:Provider` | `Smtp`（Development 为 `Logging`） | 非 Development 只允许 SMTP |
 | `Email:PublicBaseUrl` | Development `http://localhost:5224` | 邮件深链/偏好/退订链接的站点根地址；生产必须 HTTPS |
 | `Email:SuppressionHashSecret` / `Email:UnsubscribeSecret` | 生产必填 ≥32 字符 | 退信抑制 HMAC 与退订签名 |
-| `Email:Smtp:Host` / `Port` / `Security` / `FromAddress` | 空 / `587` / `StartTls` / 空 | SMTP 服务器；生产必填 Host 与 FromAddress |
+| `Email:Smtp:Host` / `Port` / `Security` / `FromAddress` | 空 / `587` / `StartTls` / 空 | SMTP 服务器；生产必填 Host 与 FromAddress，且 `Security` 不得为 `None`/`Auto`/`StartTlsWhenAvailable` |
 | `Email:Smtp:UserName` / `Password` | 未设置 | 可选认证；从秘密存储注入 |
 | `Email:Smtp:TimeoutSeconds` | `30` | SMTP 超时 |
 | `Email:PollIntervalSeconds` / `BatchSize` / `LeaseSeconds` | `30` / `20` / `300` | 发件箱轮询、单批与租约 |

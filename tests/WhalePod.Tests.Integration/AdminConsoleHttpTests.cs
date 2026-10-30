@@ -119,7 +119,7 @@ public sealed class AdminConsoleHttpTests(ApiHttpEnvironment environment)
             client,
             $"/admin/moderation/post/{pendingPost.Id}",
             adminSession);
-        using (var approve = await WebFormTestSupport.PostFormAsync(
+        using (var missingConfirm = await WebFormTestSupport.PostFormAsync(
                    client,
                    $"/admin/moderation/post/{pendingPost.Id}/action",
                    new Dictionary<string, string>
@@ -127,6 +127,31 @@ public sealed class AdminConsoleHttpTests(ApiHttpEnvironment environment)
                        ["__RequestVerificationToken"] = detailForm.Token,
                        ["action"] = "approve",
                        ["expectedContentVersion"] = pendingPost.Version.ToString()
+                   },
+                   adminSession,
+                   detailForm.CsrfCookie))
+        {
+            Assert.Equal(HttpStatusCode.Redirect, missingConfirm.StatusCode);
+            Assert.Contains(
+                "error=confirm",
+                missingConfirm.Headers.Location?.OriginalString,
+                StringComparison.Ordinal);
+        }
+
+        db.ChangeTracker.Clear();
+        Assert.Equal(
+            ModerationStatuses.Pending,
+            (await db.Posts.AsNoTracking().SingleAsync(post => post.Id == pendingPost.Id)).ModerationStatus);
+
+        using (var approve = await WebFormTestSupport.PostFormAsync(
+                   client,
+                   $"/admin/moderation/post/{pendingPost.Id}/action",
+                   new Dictionary<string, string>
+                   {
+                       ["__RequestVerificationToken"] = detailForm.Token,
+                       ["action"] = "approve",
+                       ["expectedContentVersion"] = pendingPost.Version.ToString(),
+                       ["confirm"] = "yes"
                    },
                    adminSession,
                    detailForm.CsrfCookie))
@@ -154,7 +179,8 @@ public sealed class AdminConsoleHttpTests(ApiHttpEnvironment environment)
                        ["resolutionNote"] = "举报不成立，测试驳回",
                        ["actionType"] = string.Empty,
                        ["actionReason"] = string.Empty,
-                       ["actionExpiresAt"] = string.Empty
+                       ["actionExpiresAt"] = string.Empty,
+                       ["confirm"] = "yes"
                    },
                    adminSession,
                    reportForm.CsrfCookie))
@@ -181,7 +207,8 @@ public sealed class AdminConsoleHttpTests(ApiHttpEnvironment environment)
                        ["__RequestVerificationToken"] = userForm.Token,
                        ["status"] = "muted",
                        ["reason"] = "管理后台禁言测试",
-                       ["expiresAt"] = DateTimeOffset.UtcNow.AddHours(1).ToString("yyyy-MM-ddTHH:mm")
+                       ["expiresAt"] = DateTimeOffset.UtcNow.AddHours(1).ToString("yyyy-MM-ddTHH:mm"),
+                       ["confirm"] = "yes"
                    },
                    adminSession,
                    userForm.CsrfCookie))

@@ -40,6 +40,7 @@ public sealed class GitHubOAuthServiceTests
         Assert.Equal(GitHubSignInOutcome.Success, first.Outcome);
         Assert.True(first.Created);
         Assert.NotNull(first.User);
+        Assert.Equal(UserRoles.Member, first.User!.Role);
         Assert.Null(first.User!.ActivatedAt);
         Assert.Equal(profile.Id, first.User.GitHubId);
         Assert.Equal("https://avatars.githubusercontent.com/u/777?v=4", first.User.AvatarUrl);
@@ -116,6 +117,7 @@ public sealed class GitHubOAuthServiceTests
             db,
             new HttpClient(new FakeGitHubHandler(login, githubId)),
             restrictedOptions,
+            NewBootstrap(db),
             TimeProvider.System,
             NullLogger<GitHubOAuthService>.Instance);
         var notAllowed = await restricted.SignInAsync(
@@ -136,6 +138,7 @@ public sealed class GitHubOAuthServiceTests
                 ClientId = "client",
                 ClientSecret = "secret"
             }),
+            null!,
             TimeProvider.System,
             NullLogger<GitHubOAuthService>.Instance);
         var url = service.BuildAuthorizeUrl("https://localhost/auth/github/callback", "state-value");
@@ -151,6 +154,51 @@ public sealed class GitHubOAuthServiceTests
         Assert.False(GitHubOAuthService.IsSafeReturnUrl("/\\evil"));
     }
 
+    [DatabaseFact]
+    public async Task OAuth_login_bootstraps_configured_handle_once()
+    {
+        await using var db = ServiceTestSupport.CreateContext();
+        var suffix = ServiceTestSupport.NewSuffix();
+        var login = $"oauth-bootstrap-{suffix}";
+        var githubId = Random.Shared.NextInt64(10_000_000, long.MaxValue);
+        var service = new GitHubOAuthService(
+            db,
+            new HttpClient(new FakeGitHubHandler(login, githubId)),
+            Options.Create(new GitHubOAuthOptions
+            {
+                ClientId = "client",
+                ClientSecret = "secret"
+            }),
+            NewBootstrap(db, login),
+            TimeProvider.System,
+            NullLogger<GitHubOAuthService>.Instance);
+        var profile = await service.GetProfileAsync("test-token", CancellationToken.None);
+        Assert.NotNull(profile);
+
+        var first = await service.SignInAsync(
+            profile!,
+            userId => new AuditContext(userId, "oauth-bootstrap", new byte[32]),
+            CancellationToken.None);
+        Assert.Equal(GitHubSignInOutcome.Success, first.Outcome);
+        Assert.Equal(UserRoles.Admin, first.User!.Role);
+        Assert.Equal(
+            1,
+            await db.AuditLogs.CountAsync(log =>
+                log.Action == "admin.bootstrap_granted" && log.TargetId == first.User.Id));
+
+        db.ChangeTracker.Clear();
+        var second = await service.SignInAsync(
+            profile!,
+            userId => new AuditContext(userId, "oauth-bootstrap", new byte[32]),
+            CancellationToken.None);
+        Assert.Equal(GitHubSignInOutcome.Success, second.Outcome);
+        Assert.Equal(UserRoles.Admin, second.User!.Role);
+        Assert.Equal(
+            1,
+            await db.AuditLogs.CountAsync(log =>
+                log.Action == "admin.bootstrap_granted" && log.TargetId == first.User.Id));
+    }
+
     private static GitHubOAuthService CreateService(WhalePodDbContext db, HttpMessageHandler handler)
     {
         return new GitHubOAuthService(
@@ -161,8 +209,18 @@ public sealed class GitHubOAuthServiceTests
                 ClientId = "client",
                 ClientSecret = "secret"
             }),
+            NewBootstrap(db),
             TimeProvider.System,
             NullLogger<GitHubOAuthService>.Instance);
+    }
+
+    private static AdminBootstrapService NewBootstrap(WhalePodDbContext db, params string[] handles)
+    {
+        return new AdminBootstrapService(
+            db,
+            Options.Create(new AdminBootstrapOptions { BootstrapAdminHandles = handles }),
+            TimeProvider.System,
+            NullLogger<AdminBootstrapService>.Instance);
     }
 
     private sealed class FakeGitHubHandler(string login, long githubId) : HttpMessageHandler

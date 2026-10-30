@@ -9,19 +9,7 @@ namespace WhalePod.Tests.Integration;
 
 public sealed class ProfileSettingsServiceTests
 {
-    private static string ConnectionString =>
-        Environment.GetEnvironmentVariable("WHALEPOD_TEST_DB_CONNECTION")
-        ?? throw new InvalidOperationException("WHALEPOD_TEST_DB_CONNECTION is required.");
-
-    private static WhalePodDbContext CreateContext()
-    {
-        var options = new DbContextOptionsBuilder<WhalePodDbContext>()
-            .UseNpgsql(ConnectionString)
-            .UseSnakeCaseNamingConvention()
-            .Options;
-
-        return new WhalePodDbContext(options);
-    }
+    private static WhalePodDbContext CreateContext() => ServiceTestSupport.CreateContext();
 
     [DatabaseFact]
     public async Task Update_profile_syncs_public_profile_and_audits_without_values()

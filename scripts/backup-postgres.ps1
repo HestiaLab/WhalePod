@@ -9,19 +9,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-
-function Get-ConnectionSettings {
-    param([string]$Value)
-    $settings = @{}
-    foreach ($part in $Value.Split(";")) {
-        if ([string]::IsNullOrWhiteSpace($part)) { continue }
-        $separator = $part.IndexOf("=")
-        if ($separator -lt 1) { continue }
-        $key = $part.Substring(0, $separator).Trim().ToLowerInvariant()
-        $settings[$key] = $part.Substring($separator + 1).Trim()
-    }
-    return $settings
-}
+. (Join-Path $PSScriptRoot "lib/pg-connection.ps1")
 
 function Find-PgTool {
     param([string]$Name)
@@ -51,7 +39,7 @@ if ([string]::IsNullOrWhiteSpace($ConnectionString)) {
     throw "Set WHALEPOD_DB_CONNECTION or pass -ConnectionString."
 }
 
-$settings = Get-ConnectionSettings $ConnectionString
+$settings = Get-PgConnectionSettings $ConnectionString
 $database = $settings["database"]
 if ([string]::IsNullOrWhiteSpace($database)) {
     throw "The connection string must include Database."
@@ -62,11 +50,8 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 }
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 
-$env:PGHOST = if ($settings.ContainsKey("host")) { $settings["host"] } else { "127.0.0.1" }
-$env:PGPORT = if ($settings.ContainsKey("port")) { $settings["port"] } else { "5432" }
+$environment = Set-PgConnectionEnvironment $settings
 $env:PGDATABASE = $database
-if ($settings.ContainsKey("username")) { $env:PGUSER = $settings["username"] }
-if ($settings.ContainsKey("password")) { $env:PGPASSWORD = $settings["password"] }
 
 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
 $fileName = "whalepod-$database-$timestamp.dump"
@@ -115,5 +100,5 @@ try {
     Write-Output "sha256=$hash"
 }
 finally {
-    Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+    Clear-PgConnectionSecrets
 }

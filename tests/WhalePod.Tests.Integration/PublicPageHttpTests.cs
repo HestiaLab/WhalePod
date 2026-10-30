@@ -150,12 +150,27 @@ public sealed class PublicPageHttpTests(ApiHttpEnvironment environment)
         {
             Assert.Equal(HttpStatusCode.OK, sitemapResponse.StatusCode);
             Assert.Equal("application/xml", sitemapResponse.Content.Headers.ContentType?.MediaType);
-            var sitemap = await sitemapResponse.Content.ReadAsStringAsync();
-            Assert.Contains($"/posts/{approved.Id}", sitemap, StringComparison.Ordinal);
-            Assert.DoesNotContain($"/posts/{rejected.Id}", sitemap, StringComparison.Ordinal);
-            Assert.Contains($"/users/{author.Handle}", sitemap, StringComparison.Ordinal);
-            Assert.Contains($"/tags/{tag.Slug}", sitemap, StringComparison.Ordinal);
-            Assert.Contains($"/?category={category.Slug}", sitemap, StringComparison.Ordinal);
+            var index = await sitemapResponse.Content.ReadAsStringAsync();
+            Assert.Contains("<sitemapindex", index, StringComparison.Ordinal);
+            Assert.Contains("/sitemap-posts-1.xml", index, StringComparison.Ordinal);
+            Assert.Contains("/sitemap-pages.xml", index, StringComparison.Ordinal);
+        }
+
+        using (var postsResponse = await client.GetAsync("/sitemap-posts-1.xml"))
+        {
+            Assert.Equal(HttpStatusCode.OK, postsResponse.StatusCode);
+            var postsSitemap = await postsResponse.Content.ReadAsStringAsync();
+            Assert.Contains($"/posts/{approved.Id}", postsSitemap, StringComparison.Ordinal);
+            Assert.DoesNotContain($"/posts/{rejected.Id}", postsSitemap, StringComparison.Ordinal);
+        }
+
+        using (var pagesResponse = await client.GetAsync("/sitemap-pages.xml"))
+        {
+            Assert.Equal(HttpStatusCode.OK, pagesResponse.StatusCode);
+            var pagesSitemap = await pagesResponse.Content.ReadAsStringAsync();
+            Assert.Contains($"/users/{author.Handle}", pagesSitemap, StringComparison.Ordinal);
+            Assert.Contains($"/tags/{tag.Slug}", pagesSitemap, StringComparison.Ordinal);
+            Assert.Contains($"/?category={category.Slug}", pagesSitemap, StringComparison.Ordinal);
         }
 
         var robots = await GetTextAsync(client, "/robots.txt");

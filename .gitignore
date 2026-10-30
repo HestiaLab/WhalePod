@@ -489,3 +489,6 @@ artifacts/
 
 # Local tool session data
 .qoder-credits/
+
+# Browser smoke reports (local evidence; do not commit screenshots)
+tests/browser/reports/

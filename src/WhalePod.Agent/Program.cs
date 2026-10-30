@@ -59,7 +59,8 @@ catch (AgentApiException exception)
 }
 catch (OperationCanceledException)
 {
-    return 0;
+    Console.Error.WriteLine("MCP Server 请求被取消或超时。");
+    return 1;
 }
 catch (Exception exception)
 {

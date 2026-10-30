@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Claims;
 using System.Text.Json;
 
@@ -66,6 +67,7 @@ internal static class GitHubOAuthEndpoints
             SiteModeService siteMode,
             AuditRequestContextFactory auditContextFactory,
             IOptions<GitHubOAuthOptions> options,
+            IConfiguration configuration,
             ILogger<Program> logger) =>
         {
             var stateCookie = http.Request.Cookies[StateCookieName];
@@ -120,12 +122,17 @@ internal static class GitHubOAuthEndpoints
                 }
 
                 var user = result.User;
+                var absoluteSessionHours = configuration.GetValue("Auth:AbsoluteSessionHours", 24);
+                var issuedAt = DateTimeOffset.UtcNow;
+                var absoluteExpiry = issuedAt.AddHours(absoluteSessionHours);
                 var identity = new ClaimsIdentity(
                 [
                     new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
                     new Claim(ClaimTypes.Name, user.Handle),
                     new Claim(ClaimTypes.Role, user.Role),
-                    new Claim("auth_time", DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString())
+                    new Claim(SessionClaims.Version, user.SessionVersion.ToString(CultureInfo.InvariantCulture)),
+                    new Claim(SessionClaims.AbsoluteExpiry, absoluteExpiry.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture)),
+                    new Claim("auth_time", issuedAt.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture))
                 ], CookieAuthenticationDefaults.AuthenticationScheme);
                 await http.SignInAsync(
                     CookieAuthenticationDefaults.AuthenticationScheme,
@@ -133,7 +140,7 @@ internal static class GitHubOAuthEndpoints
                     new AuthenticationProperties
                     {
                         IsPersistent = false,
-                        ExpiresUtc = DateTimeOffset.UtcNow.AddHours(8)
+                        ExpiresUtc = absoluteExpiry
                     });
 
                 var returnUrl = GitHubOAuthService.IsSafeReturnUrl(payload.ReturnUrl)

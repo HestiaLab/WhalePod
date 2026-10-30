@@ -16,6 +16,7 @@ public sealed class AgentFailureRecorder(
     public async Task RecordSuggestionInvalidAsync(
         Guid serviceAccountId,
         Guid taskId,
+        string code,
         AuditContext audit,
         CancellationToken cancellationToken = default)
     {
@@ -31,7 +32,7 @@ public sealed class AgentFailureRecorder(
             IpHash = audit.IpHash,
             MetadataJson = JsonSerializer.SerializeToDocument(new
             {
-                code = ApiErrorCodes.SuggestionInvalid,
+                code,
                 count = 1
             }),
             CreatedAt = now

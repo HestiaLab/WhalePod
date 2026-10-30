@@ -492,6 +492,7 @@ pre code { padding: 0; border: 0; background: transparent; color: inherit; font-
 .comment-body p:first-child { margin-top: 0; }
 .comment-body p:last-child { margin-bottom: 0; }
 .comment-children { margin: 14px 0 0 16px; padding-left: 16px; border-left: 1px solid var(--rule); }
+.comment-depth-6 .comment-children { margin-left: 0; padding-left: 0; border-left: 0; }
 .deleted-comment { margin: 8px 0 0; color: var(--muted); font-size: 12.5px; font-style: italic; }
 .comment-form { margin-top: 22px; padding: 16px 0 0; border: 0; border-top: 1px solid var(--rule-strong); border-radius: 0; background: transparent; }
 .comment-form-head { margin-bottom: 10px; }
@@ -1232,3 +1233,48 @@ html[data-theme="dark"] .admin-rail { background: #0a0c09; }
     :root:not([data-theme="light"]) .button-danger:hover { color: #2d1715; }
     :root:not([data-theme="light"]) .admin-rail { background: #0a0c09; }
 }
+
+/* Interaction forms: likes, acceptance, reports and comment deletion. */
+.post-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 12px 0 20px; }
+.inline-form { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
+.link-button {
+    min-height: 32px;
+    padding: 0 4px;
+    border: 0;
+    background: transparent;
+    color: var(--petrol);
+    font: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+}
+.link-button:hover { background: transparent; color: var(--petrol-2); }
+.action-disclosure { display: inline-block; }
+.action-disclosure > summary { cursor: pointer; list-style: none; }
+.action-disclosure > summary::-webkit-details-marker { display: none; }
+.action-disclosure > summary.link-button { display: inline-flex; align-items: center; }
+.report-form {
+    display: grid;
+    gap: 8px;
+    max-width: 420px;
+    margin-top: 8px;
+    padding: 12px;
+    border: 1px solid var(--rule);
+    background: var(--paper-2);
+    text-align: left;
+}
+.report-form p { margin: 0; }
+.report-form label { display: block; margin-bottom: 4px; font-size: 13px; }
+.report-form select,
+.report-form textarea { width: 100%; }
+.editor-image-list { display: grid; gap: 8px; padding: 0; list-style: none; }
+.editor-image-list li { display: flex; align-items: flex-start; gap: 10px; }
+.editor-image-list img { border: 1px solid var(--rule); object-fit: cover; }
+.editor-image-fields { display: grid; flex: 1; gap: 4px; min-width: 0; }
+.editor-image-fields code { overflow-wrap: anywhere; font-size: 12px; }
+.editor-image-actions { display: flex; gap: 10px; }
+.tag-choices-scroll { max-height: 280px; overflow-y: auto; padding-right: 4px; }
+.artifact-row-actions { display: flex; justify-content: flex-end; gap: 6px; margin-bottom: 8px; }
+.hidden-form { display: none; }
+.editor-image-upload { margin-bottom: 16px; }
+

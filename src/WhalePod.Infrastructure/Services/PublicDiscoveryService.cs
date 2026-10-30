@@ -12,6 +12,12 @@ public sealed record SitemapDocument(
     IReadOnlyList<SitemapEntry> Entries,
     DateTimeOffset LastModified);
 
+public sealed record SitemapShard(string Path, DateTimeOffset LastModified);
+
+public sealed record SitemapIndexDocument(
+    IReadOnlyList<SitemapShard> Shards,
+    DateTimeOffset LastModified);
+
 public sealed record RssItemView(
     Guid Id,
     string Title,
@@ -26,12 +32,75 @@ public sealed record RssDocument(
 
 public sealed class PublicDiscoveryService(WhalePodDbContext db)
 {
-    public async Task<SitemapDocument> GetSitemapAsync(
-        int maxPosts = 5000,
+    public async Task<SitemapIndexDocument> GetSitemapIndexAsync(
+        int postsPerShard = 5000,
         CancellationToken cancellationToken = default)
     {
-        var entries = new List<SitemapEntry>();
-        var postLimit = Math.Clamp(maxPosts, 1, 10_000);
+        var shardSize = Math.Clamp(postsPerShard, 1, 10_000);
+        var postCount = await db.Posts
+            .AsNoTracking()
+            .CountAsync(
+                post => post.ModerationStatus == ModerationStatuses.Approved
+                    && post.DeletedAt == null,
+                cancellationToken);
+        var shardCount = Math.Max(1, (int)Math.Ceiling(postCount / (double)shardSize));
+        var latestPost = await db.Posts
+            .AsNoTracking()
+            .Where(post => post.ModerationStatus == ModerationStatuses.Approved
+                && post.DeletedAt == null)
+            .MaxAsync(post => (DateTimeOffset?)post.UpdatedAt, cancellationToken)
+            ?? DateTimeOffset.UnixEpoch;
+        var latestCategory = await db.Categories
+            .AsNoTracking()
+            .Where(category => category.Status == CategoryStatuses.Active)
+            .MaxAsync(category => (DateTimeOffset?)category.UpdatedAt, cancellationToken)
+            ?? DateTimeOffset.UnixEpoch;
+        var latestUser = await db.Users
+            .AsNoTracking()
+            .Where(user => (user.Status == UserStatuses.Active || user.Status == UserStatuses.Muted)
+                && user.ActivatedAt != null
+                && user.DeletedAt == null)
+            .MaxAsync(user => (DateTimeOffset?)user.UpdatedAt, cancellationToken)
+            ?? DateTimeOffset.UnixEpoch;
+        var latestTag = await db.Tags
+            .AsNoTracking()
+            .Where(tag => tag.Status == TagStatuses.Active)
+            .MaxAsync(tag => (DateTimeOffset?)tag.UpdatedAt, cancellationToken)
+            ?? DateTimeOffset.UnixEpoch;
+
+        var shards = new List<SitemapShard>(shardCount + 1);
+        for (var page = 1; page <= shardCount; page++)
+        {
+            shards.Add(new SitemapShard($"/sitemap-posts-{page}.xml", latestPost));
+        }
+
+        var pagesLastModified = new[] { latestPost, latestCategory, latestUser, latestTag }.Max();
+        shards.Add(new SitemapShard("/sitemap-pages.xml", pagesLastModified));
+        return new SitemapIndexDocument(shards, pagesLastModified);
+    }
+
+    public async Task<SitemapDocument?> GetPostSitemapShardAsync(
+        int page,
+        int postsPerShard = 5000,
+        CancellationToken cancellationToken = default)
+    {
+        if (page < 1)
+        {
+            return null;
+        }
+
+        var shardSize = Math.Clamp(postsPerShard, 1, 10_000);
+        var postCount = await db.Posts
+            .AsNoTracking()
+            .CountAsync(
+                post => post.ModerationStatus == ModerationStatuses.Approved
+                    && post.DeletedAt == null,
+                cancellationToken);
+        var shardCount = Math.Max(1, (int)Math.Ceiling(postCount / (double)shardSize));
+        if (page > shardCount)
+        {
+            return null;
+        }
 
         var posts = await db.Posts
             .AsNoTracking()
@@ -39,12 +108,23 @@ public sealed class PublicDiscoveryService(WhalePodDbContext db)
                 && post.DeletedAt == null)
             .OrderByDescending(post => post.UpdatedAt)
             .ThenByDescending(post => post.Id)
-            .Take(postLimit)
+            .Skip((page - 1) * shardSize)
+            .Take(shardSize)
             .Select(post => new { post.Id, post.UpdatedAt })
             .ToListAsync(cancellationToken);
-        entries.AddRange(posts.Select(post =>
-            new SitemapEntry($"/posts/{post.Id}", post.UpdatedAt)));
+        var entries = posts
+            .Select(post => new SitemapEntry($"/posts/{post.Id}", post.UpdatedAt))
+            .ToList();
+        var lastModified = entries.Count == 0
+            ? DateTimeOffset.UnixEpoch
+            : entries.Max(entry => entry.LastModified);
+        return new SitemapDocument(entries, lastModified);
+    }
 
+    public async Task<SitemapDocument> GetPageSitemapAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var entries = new List<SitemapEntry>();
         var categories = await db.Categories
             .AsNoTracking()
             .Where(category => category.Status == CategoryStatuses.Active)
@@ -75,9 +155,12 @@ public sealed class PublicDiscoveryService(WhalePodDbContext db)
         entries.AddRange(tags.Select(tag =>
             new SitemapEntry($"/tags/{tag.Slug}", tag.UpdatedAt)));
 
-        var latestPost = posts.Count == 0
-            ? DateTimeOffset.UnixEpoch
-            : posts.Max(post => post.UpdatedAt);
+        var latestPost = await db.Posts
+            .AsNoTracking()
+            .Where(post => post.ModerationStatus == ModerationStatuses.Approved
+                && post.DeletedAt == null)
+            .MaxAsync(post => (DateTimeOffset?)post.UpdatedAt, cancellationToken)
+            ?? DateTimeOffset.UnixEpoch;
         var latestTag = tags.Count == 0
             ? DateTimeOffset.UnixEpoch
             : tags.Max(tag => tag.UpdatedAt);

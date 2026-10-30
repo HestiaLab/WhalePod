@@ -21,7 +21,7 @@ v0.1.0 代码与本地可执行验收已完成：
 - 公开 SSR 页面、公开 JSON API、RSS/Sitemap/robots、搜索与 SEO；AI 审核 Agent API 与 stdio MCP 默认关闭。
 - 实测档案 UI，含暗色、打印、forced-colors、无 JS、200% 文本与响应式验收。
 
-验证基线：Release 构建 0 warning / 0 error；23 单元 + 158 真实 PostgreSQL/HTTP 集成 + 1 E2E 占位通过；axe 56 次全量扫描与 Release 终检 0 违规；浏览器写路径在可弃库完成发帖→审核→评论→公开可见。完整证据见 [acceptance.md](docs/design/acceptance.md)。
+验证基线：Release 构建 0 warning / 0 error；38 单元 + 244 真实 PostgreSQL/HTTP 集成 + 1 真实 E2E 流程通过（0 跳过）；浏览器写路径在可弃库完成发帖→审核→评论→公开可见。历史 axe 结论的原始报告未留存，现提供 `tests/browser/` 可复跑脚本。完整证据见 [acceptance.md](docs/design/acceptance.md)。
 
 **生产启用前仍需外部验收**：真实 GitHub OAuth 凭据与回调、SMTP/COS/S3、腾讯云预发迁移与回滚、Q-02 本地模型与标注评估、真实屏幕阅读器/物理设备、CLI 实机与签名、10 分钟容量压测。详见 [production-readiness.md](docs/design/production-readiness.md)。
 

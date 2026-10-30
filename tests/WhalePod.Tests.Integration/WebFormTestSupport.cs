@@ -46,6 +46,21 @@ internal static class WebFormTestSupport
         string sessionCookie,
         string csrfCookie)
     {
+        return await PostFormAsync(
+            client,
+            path,
+            form.Select(pair => new KeyValuePair<string, string>(pair.Key, pair.Value)),
+            sessionCookie,
+            csrfCookie);
+    }
+
+    public static async Task<HttpResponseMessage> PostFormAsync(
+        HttpClient client,
+        string path,
+        IEnumerable<KeyValuePair<string, string>> form,
+        string sessionCookie,
+        string csrfCookie)
+    {
         var request = new HttpRequestMessage(HttpMethod.Post, path)
         {
             Content = new FormUrlEncodedContent(form)

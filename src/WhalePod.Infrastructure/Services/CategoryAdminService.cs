@@ -32,7 +32,8 @@ public sealed record CategoryAdminItem(
     int DisplayOrder,
     string Status,
     int PublicPostCount,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    bool RequiresKernel);
 
 public sealed class CategoryAdminService(
     WhalePodDbContext db,
@@ -66,8 +67,41 @@ public sealed class CategoryAdminService(
                 row.Category.DisplayOrder,
                 row.Category.Status,
                 row.PublicPostCount,
-                row.Category.UpdatedAt))
+                row.Category.UpdatedAt,
+                row.Category.RequiresKernel))
             .ToList();
+    }
+
+    public async Task<CategoryAdminItem?> GetAsync(
+        Guid actorId,
+        Guid categoryId,
+        CancellationToken cancellationToken = default)
+    {
+        await RequireAdminAsync(actorId, cancellationToken);
+        var row = await db.Categories
+            .AsNoTracking()
+            .Where(category => category.Id == categoryId)
+            .Select(category => new
+            {
+                Category = category,
+                PublicPostCount = db.Posts.Count(post =>
+                    post.CategoryId == category.Id
+                    && post.ModerationStatus == ModerationStatuses.Approved
+                    && post.DeletedAt == null)
+            })
+            .SingleOrDefaultAsync(cancellationToken);
+        return row is null
+            ? null
+            : new CategoryAdminItem(
+                row.Category.Id,
+                row.Category.Slug,
+                row.Category.Name,
+                row.Category.Description,
+                row.Category.DisplayOrder,
+                row.Category.Status,
+                row.PublicPostCount,
+                row.Category.UpdatedAt,
+                row.Category.RequiresKernel);
     }
 
     public async Task<CategoryMutationResult> CreateAsync(
@@ -76,6 +110,7 @@ public sealed class CategoryAdminService(
         string? name,
         string? description,
         int displayOrder,
+        bool requiresKernel,
         AuditContext audit,
         CancellationToken cancellationToken = default)
     {
@@ -100,6 +135,7 @@ public sealed class CategoryAdminService(
             Description = normalized.Description,
             DisplayOrder = normalized.DisplayOrder,
             Status = CategoryStatuses.Active,
+            RequiresKernel = requiresKernel,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -126,6 +162,7 @@ public sealed class CategoryAdminService(
         string? name,
         string? description,
         int displayOrder,
+        bool requiresKernel,
         AuditContext audit,
         CancellationToken cancellationToken = default)
     {
@@ -144,7 +181,8 @@ public sealed class CategoryAdminService(
 
         if (category.Name == normalized.Name
             && category.Description == normalized.Description
-            && category.DisplayOrder == normalized.DisplayOrder)
+            && category.DisplayOrder == normalized.DisplayOrder
+            && category.RequiresKernel == requiresKernel)
         {
             return new CategoryMutationResult(CategoryMutationOutcome.Unchanged, categoryId);
         }
@@ -152,9 +190,11 @@ public sealed class CategoryAdminService(
         var previousName = category.Name;
         var previousDescription = category.Description;
         var previousOrder = category.DisplayOrder;
+        var previousRequiresKernel = category.RequiresKernel;
         category.Name = normalized.Name;
         category.Description = normalized.Description;
         category.DisplayOrder = normalized.DisplayOrder;
+        category.RequiresKernel = requiresKernel;
         category.UpdatedAt = timeProvider.GetUtcNow();
         db.AuditLogs.Add(AuditLogWriter.CreateUserAction(
             audit,
@@ -168,7 +208,9 @@ public sealed class CategoryAdminService(
                 previousDescription,
                 description = category.Description,
                 previousDisplayOrder = previousOrder,
-                displayOrder = category.DisplayOrder
+                displayOrder = category.DisplayOrder,
+                previousRequiresKernel,
+                requiresKernel = category.RequiresKernel
             },
             category.UpdatedAt));
         await db.SaveChangesAsync(cancellationToken);

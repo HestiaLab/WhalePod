@@ -25,6 +25,7 @@ public sealed partial class WhalePodDbContext
             b.Property(x => x.Name).HasMaxLength(40).IsRequired();
             b.Property(x => x.Description).HasMaxLength(200);
             b.Property(x => x.Status).HasMaxLength(20).HasDefaultValue(CategoryStatuses.Active);
+            b.Property(x => x.RequiresKernel).HasDefaultValue(false);
             b.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
             b.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
             b.HasIndex(x => x.Slug).IsUnique().HasDatabaseName("uq_category_slug");
@@ -80,6 +81,7 @@ public sealed partial class WhalePodDbContext
                 t.HasCheckConstraint("ck_media_upload_size", "byte_size BETWEEN 1 AND 10485760");
                 t.HasCheckConstraint("ck_media_upload_mime", "mime_type IN ('image/jpeg','image/png','image/webp','image/gif')");
                 t.HasCheckConstraint("ck_media_upload_attached_post", "status <> 'attached' OR post_id IS NOT NULL");
+                t.HasCheckConstraint("ck_media_upload_attempts", "cleanup_attempts >= 0");
             });
 
             b.HasKey(x => x.Id);
@@ -92,6 +94,7 @@ public sealed partial class WhalePodDbContext
             b.HasIndex(x => x.Url).IsUnique().HasDatabaseName("uq_media_upload_url");
             b.HasIndex(x => new { x.OwnerId, x.Status }).HasDatabaseName("ix_media_upload_owner_status");
             b.HasIndex(x => x.ExpiresAt).HasDatabaseName("ix_media_upload_cleanup").HasFilter("status IN ('temp','deleted')");
+            b.HasIndex(x => new { x.NextAttemptAt, x.ExpiresAt }).HasDatabaseName("ix_media_upload_retry").HasFilter("status IN ('temp','deleted')");
             b.HasOne<User>().WithMany().HasForeignKey(x => x.OwnerId).OnDelete(DeleteBehavior.Restrict);
             b.HasOne<Post>().WithMany().HasForeignKey(x => x.PostId).OnDelete(DeleteBehavior.SetNull);
         });

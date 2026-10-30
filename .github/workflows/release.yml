@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 20
     services:
       postgres:
-        image: postgres:18
+        image: postgres:18.6
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -41,12 +41,12 @@ jobs:
       WHALEPOD_TEST_DB_CONNECTION: "Host=127.0.0.1;Port=5432;Database=whalepod_test;Username=postgres;Password=postgres"
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.4.0
 
       - name: 安装 .NET SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v4.3.1
         with:
-          dotnet-version: "10.0.x"
+          dotnet-version: "10.0.401"
           cache: true
           cache-dependency-path: |
             **/*.csproj
@@ -54,13 +54,78 @@ jobs:
             global.json
 
       - name: 还原依赖
-        run: dotnet restore WhalePod.slnx
+        run: dotnet restore WhalePod.slnx --locked-mode
 
       - name: 构建
         run: dotnet build WhalePod.slnx -c Release --no-restore
 
+      - name: 格式检查
+        run: dotnet format WhalePod.slnx --verify-no-changes --no-restore
+
       - name: 运行测试
-        run: dotnet test WhalePod.slnx -c Release --no-build
+        run: dotnet test WhalePod.slnx -c Release --no-build --logger trx --results-directory TestResults
+
+      - name: 校验数据库/HTTP 集成测试未跳过
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import glob
+          import sys
+          import xml.etree.ElementTree as ET
+
+          files = glob.glob("TestResults/**/*.trx", recursive=True)
+          if not files:
+              sys.exit("No TRX files found; tests did not run.")
+
+          results = []
+          for path in files:
+              root = ET.parse(path).getroot()
+              for element in root.iter():
+                  if element.tag.endswith("UnitTestResult"):
+                      results.append((element.get("testName") or "", element.get("outcome") or ""))
+
+          skipped = [name for name, outcome in results if outcome in {"NotExecuted", "Skipped"}]
+          if skipped:
+              print("Skipped tests are not allowed when PostgreSQL is provisioned:", *skipped, sep="\n  ")
+              sys.exit(1)
+          if not results:
+              sys.exit("No test results were recorded.")
+          print(f"{len(results)} tests executed, 0 skipped.")
+          PY
+
+      - name: 上传测试结果
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: release-test-results
+          path: TestResults/**/*.trx
+          if-no-files-found: ignore
+
+  container:
+    name: 构建容器镜像
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4.4.0
+
+      - name: 构建 Web/API/迁移镜像
+        run: |
+          docker build -f deploy/Dockerfile --target web -t whalepod-web:ci .
+          docker build -f deploy/Dockerfile --target api -t whalepod-api:ci .
+          docker build -f deploy/Dockerfile --target migrate -t whalepod-migrate:ci .
+          docker image inspect whalepod-web:ci --format '{{.Id}}' > web-image-id.txt
+          docker image inspect whalepod-api:ci --format '{{.Id}}' > api-image-id.txt
+          docker image inspect whalepod-migrate:ci --format '{{.Id}}' > migrate-image-id.txt
+
+      - name: 上传镜像 ID 证据
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: container-image-ids
+          path: "*-image-id.txt"
+          if-no-files-found: error
 
   publish:
     name: 发布 ${{ matrix.name }}
@@ -98,12 +163,12 @@ jobs:
             single_file: true
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.4.0
 
       - name: 安装 .NET SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v4.3.1
         with:
-          dotnet-version: "10.0.x"
+          dotnet-version: "10.0.401"
           cache: true
           cache-dependency-path: |
             **/*.csproj
@@ -127,7 +192,7 @@ jobs:
           zip -r "../${{ matrix.name }}.zip" .
 
       - name: 上传构建产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: ${{ matrix.name }}
           path: out/${{ matrix.name }}.zip
@@ -140,16 +205,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 下载构建产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.3.0
         with:
           path: artifacts
 
-      - name: 生成 SHA-256 清单
+      - name: 生成 SHA-256 清单与来源记录
         run: |
           cd artifacts
+          echo "${GITHUB_SHA}" > COMMIT_SHA
           find . -type f -name '*.zip' -print0 \
             | sort -z \
             | xargs -0 sha256sum > SHA256SUMS
+          cat COMMIT_SHA
           cat SHA256SUMS
 
       - name: 上传 Release 资源
@@ -165,4 +232,4 @@ jobs:
           fi
           find artifacts -type f -name '*.zip' -print0 \
             | xargs -0 -n1 gh release upload "$tag" --clobber
-          gh release upload "$tag" artifacts/SHA256SUMS --clobber
+          gh release upload "$tag" artifacts/SHA256SUMS artifacts/COMMIT_SHA --clobber

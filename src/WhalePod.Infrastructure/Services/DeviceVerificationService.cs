@@ -362,25 +362,21 @@ public sealed class DeviceVerificationService(
                 cancellationToken);
         }
 
-        if (existing is not null && existing.Status == DeviceStatuses.Revoked)
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await db.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT id FROM \"user\" WHERE id = {actorId} FOR UPDATE",
+            cancellationToken);
+        if (existing is not null)
         {
-            var activeCount = await CountActiveAsync(actorId, cancellationToken);
-            if (activeCount >= maxActiveDevices)
-            {
-                throw await ThrowFailureAsync(
-                    actorId,
-                    audit,
-                    DeviceLimit(maxActiveDevices),
-                    challenge.Id,
-                    "device_limit_reached",
-                    cancellationToken);
-            }
+            await db.Entry(existing).ReloadAsync(cancellationToken);
         }
-        else if (existing is null)
+
+        if (existing is null || existing.Status == DeviceStatuses.Revoked)
         {
             var activeCount = await CountActiveAsync(actorId, cancellationToken);
             if (activeCount >= maxActiveDevices)
             {
+                await transaction.RollbackAsync(cancellationToken);
                 throw await ThrowFailureAsync(
                     actorId,
                     audit,
@@ -392,7 +388,6 @@ public sealed class DeviceVerificationService(
         }
 
         var reactivated = existing?.Status == DeviceStatuses.Revoked;
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var used = await db.DeviceChallenges
             .Where(candidate => candidate.Id == challenge.Id
                 && candidate.UserId == actorId
@@ -650,8 +645,11 @@ public sealed class DeviceVerificationService(
         CancellationToken cancellationToken = default)
     {
         await actorGuard.RequireReadAccessAsync(actorId, cancellationToken);
+        var now = timeProvider.GetUtcNow();
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var device = await db.Devices
-            .SingleOrDefaultAsync(candidate => candidate.Id == deviceId, cancellationToken);
+            .FromSqlInterpolated($"SELECT * FROM device WHERE id = {deviceId} FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
         if (device is null)
         {
             throw ApiProblemException.NotFound("设备不存在。");
@@ -677,7 +675,6 @@ public sealed class DeviceVerificationService(
             throw ApiProblemException.Validation("reason", "管理员撤销他人设备时必须填写原因。");
         }
 
-        var now = timeProvider.GetUtcNow();
         if (device.Status == DeviceStatuses.Revoked)
         {
             return new DeviceRevokeView(
@@ -687,7 +684,6 @@ public sealed class DeviceVerificationService(
                 await CountActiveAsync(device.UserId, cancellationToken));
         }
 
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         device.Status = DeviceStatuses.Revoked;
         device.RevokedAt = now;
         device.RevokedBy = actorId;
@@ -711,13 +707,21 @@ public sealed class DeviceVerificationService(
             targetId = device.Id,
             targetUrl = "/settings/devices"
         };
-        var dedupeKey = $"device-revoked:{device.Id:N}";
-        db.Notifications.Add(NotificationWriter.Create(
-            device.UserId,
-            NotificationTypes.DeviceRevoked,
-            payload,
-            dedupeKey,
-            now));
+        var dedupeKey = $"device-revoked:{device.Id:N}:{device.LastVerifiedAt.UtcTicks}";
+        var notificationExists = await db.Notifications
+            .AsNoTracking()
+            .AnyAsync(notification => notification.UserId == device.UserId
+                && notification.DedupeKey == dedupeKey, cancellationToken);
+        if (!notificationExists)
+        {
+            db.Notifications.Add(NotificationWriter.Create(
+                device.UserId,
+                NotificationTypes.DeviceRevoked,
+                payload,
+                dedupeKey,
+                now));
+        }
+
         await emailQueue.EnqueueForNotificationAsync(
             device.UserId,
             NotificationTypes.DeviceRevoked,

@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 
 using WhalePod.Contracts.Devices;
+using WhalePod.DeviceCli;
 
 try
 {
@@ -287,28 +288,10 @@ static string DetectKernelVersion()
         return $"{version.Major}.{version.Minor}.{Math.Max(0, version.Build)}";
     }
 
-    try
+    var output = ProcessRunner.Run("uname", "-r", TimeSpan.FromSeconds(2));
+    if (output is not null && DeviceProtocol.IsValidKernelVersion(output))
     {
-        var startInfo = new ProcessStartInfo("uname", "-r")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        using var process = Process.Start(startInfo);
-        if (process is not null)
-        {
-            var output = process.StandardOutput.ReadToEnd().Trim();
-            process.WaitForExit(2000);
-            if (process.ExitCode == 0 && DeviceProtocol.IsValidKernelVersion(output))
-            {
-                return output;
-            }
-        }
-    }
-    catch (Exception)
-    {
+        return output;
     }
 
     var fallback = Environment.OSVersion.Version;

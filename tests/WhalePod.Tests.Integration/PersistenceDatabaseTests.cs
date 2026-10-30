@@ -14,33 +14,17 @@ public sealed class DatabaseFactAttribute : FactAttribute
 {
     public DatabaseFactAttribute()
     {
-        var connectionString = Environment.GetEnvironmentVariable("WHALEPOD_TEST_DB_CONNECTION");
-        if (string.IsNullOrWhiteSpace(connectionString))
+        var connectionString = Environment.GetEnvironmentVariable(TestDatabaseGuard.EnvironmentVariableName);
+        if (!TestDatabaseGuard.TryValidate(connectionString, out var reason))
         {
-            Skip = "Set WHALEPOD_TEST_DB_CONNECTION to a disposable database named whalepod_test.";
-        }
-        else if (!connectionString.Contains("whalepod_test", StringComparison.OrdinalIgnoreCase))
-        {
-            Skip = "Refusing to run database tests against a database not named whalepod_test.";
+            Skip = reason;
         }
     }
 }
 
 public sealed class PersistenceDatabaseTests
 {
-    private static string ConnectionString =>
-        Environment.GetEnvironmentVariable("WHALEPOD_TEST_DB_CONNECTION")
-        ?? throw new InvalidOperationException("WHALEPOD_TEST_DB_CONNECTION is required.");
-
-    private static WhalePodDbContext CreateContext()
-    {
-        var options = new DbContextOptionsBuilder<WhalePodDbContext>()
-            .UseNpgsql(ConnectionString)
-            .UseSnakeCaseNamingConvention()
-            .Options;
-
-        return new WhalePodDbContext(options);
-    }
+    private static WhalePodDbContext CreateContext() => ServiceTestSupport.CreateContext();
 
     [DatabaseFact]
     public async Task Migration_creates_all_tables_extensions_and_raw_objects()

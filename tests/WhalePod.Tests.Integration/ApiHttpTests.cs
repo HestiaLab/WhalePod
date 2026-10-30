@@ -46,6 +46,7 @@ public sealed class WhalePodApiFactory(
 
     public async Task MigrateAsync()
     {
+        await TestDatabaseGuard.EnsureServerMatchesAsync(ServiceTestSupport.ConnectionString);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WhalePod.Infrastructure.Persistence.WhalePodDbContext>();
         await db.Database.MigrateAsync();

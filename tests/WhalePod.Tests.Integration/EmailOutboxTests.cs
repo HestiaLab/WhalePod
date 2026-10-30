@@ -324,6 +324,77 @@ public sealed class EmailOutboxTests
             tokens.Create(user.Id, EmailPreferenceTypes.AccountSecurity));
     }
 
+    [DatabaseFact]
+    public async Task Expired_lease_holder_cannot_overwrite_a_new_terminal_status()
+    {
+        await using var db = ServiceTestSupport.CreateContext();
+        await db.Database.MigrateAsync();
+
+        var user = ServiceTestSupport.NewUser("email-fencing");
+        user.Email = $"fencing-{ServiceTestSupport.NewSuffix()}@example.test";
+        db.Users.Add(user);
+        var outbox = AddOutbox(
+            db,
+            user,
+            NotificationTypes.Reply,
+            "有人回复了你的评论。",
+            "/posts/00000000-0000-4000-8000-000000000002");
+        await db.SaveChangesAsync();
+        await EmailTestSupport.MarkOtherOutboxSentAsync(db, outbox.Id);
+
+        var blocking = new BlockingEmailSender();
+        var options = EmailTestSupport.NewOptions();
+        options.LeaseSeconds = 1;
+        var firstDispatcher = EmailTestSupport.CreateDispatcher(db, blocking, options);
+        var firstRun = firstDispatcher.ProcessOnceAsync();
+        await blocking.Started.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await using (var secondDb = ServiceTestSupport.CreateContext())
+        {
+            await secondDb.EmailOutbox
+                .Where(email => email.Id == outbox.Id)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(email => email.LockedUntil, DateTimeOffset.UtcNow.AddSeconds(-10)));
+            var sender = new RecordingEmailSender();
+            var secondDispatcher = EmailTestSupport.CreateDispatcher(secondDb, sender, options);
+            var second = await secondDispatcher.ProcessOnceAsync();
+            Assert.Equal(1, second.Sent);
+        }
+
+        blocking.Complete(new EmailSendResult(EmailSendOutcome.TransientFailure, "late_failure"));
+        var first = await firstRun;
+        Assert.Equal(0, first.Retried);
+
+        db.ChangeTracker.Clear();
+        var stored = await db.EmailOutbox.SingleAsync(email => email.Id == outbox.Id);
+        Assert.Equal(EmailStatuses.Sent, stored.Status);
+        Assert.Null(stored.LeaseToken);
+        Assert.Null(stored.LockedUntil);
+    }
+
+    private sealed class BlockingEmailSender : IEmailSender
+    {
+        private readonly TaskCompletionSource _started =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<EmailSendResult> _result =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Started => _started.Task;
+
+        public async Task<EmailSendResult> SendAsync(
+            EmailMessage message,
+            CancellationToken cancellationToken = default)
+        {
+            _started.TrySetResult();
+            return await _result.Task.WaitAsync(cancellationToken);
+        }
+
+        public void Complete(EmailSendResult result)
+        {
+            _result.TrySetResult(result);
+        }
+    }
+
     private static EmailOutbox AddOutbox(
         WhalePodDbContext db,
         User user,

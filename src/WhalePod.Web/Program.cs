@@ -100,15 +100,25 @@ if (viewCounterWindowSeconds < 60
 var webWriteLimitPermit = builder.Configuration.GetValue("WebWriteRateLimit:PermitLimit", 60);
 var webWriteLimitWindowSeconds = builder.Configuration.GetValue("WebWriteRateLimit:WindowSeconds", 60);
 var maxFormBodyBytes = builder.Configuration.GetValue("WebRequestLimits:MaxFormBodyBytes", 2 * 1024 * 1024);
+var absoluteSessionHours = builder.Configuration.GetValue("Auth:AbsoluteSessionHours", 24);
+if (absoluteSessionHours is < 1 or > 168)
+{
+    throw new InvalidOperationException("Auth:AbsoluteSessionHours must be between 1 and 168.");
+}
+var maxImageUploadBytes = builder.Configuration.GetValue(
+    "WebRequestLimits:MaxImageUploadBytes",
+    MediaLimits.MaxImageBytes + 1024 * 1024);
 var inviteRedeemLimit = builder.Configuration.GetValue("InviteRedeemRateLimit:PermitLimit", 10);
 var inviteRedeemWindowSeconds = builder.Configuration.GetValue("InviteRedeemRateLimit:WindowSeconds", 60);
 if (webWriteLimitPermit < 1
     || webWriteLimitWindowSeconds < 1
     || maxFormBodyBytes < 1024
+    || maxImageUploadBytes < MediaLimits.MaxImageBytes + 1024 * 1024
     || inviteRedeemLimit < 1
     || inviteRedeemWindowSeconds < 1)
 {
-    throw new InvalidOperationException("WebWriteRateLimit, WebRequestLimits and InviteRedeemRateLimit values must be positive.");
+    throw new InvalidOperationException(
+        "WebWriteRateLimit, WebRequestLimits and InviteRedeemRateLimit values must be positive, and the image upload limit must cover the maximum image size.");
 }
 
 var keysDirectory = builder.Configuration["DataProtection:KeysDirectory"];
@@ -147,6 +157,7 @@ builder.Services.AddScoped<InviteRedemptionService>();
 builder.Services.AddScoped<CopyCounterService>();
 builder.Services.AddScoped<ViewCounterService>();
 builder.Services.AddScoped<AdminAccessService>();
+builder.Services.AddScoped<SessionValidator>();
 builder.Services.AddScoped<ActorGuard>();
 builder.Services.AddScoped<AdminBootstrapService>();
 builder.Services.AddScoped<SiteModeService>();
@@ -172,15 +183,20 @@ builder.Services.AddScoped<AccountDeletionService>();
 builder.Services.AddScoped<AppealService>();
 builder.Services.AddScoped<PublicContentService>();
 builder.Services.AddScoped<PublicSearchService>();
+builder.Services.Configure<PublicSearchOptions>(builder.Configuration.GetSection("PublicSearch"));
 builder.Services.AddScoped<PublicDiscoveryService>();
 builder.Services.AddScoped<PostWriteService>();
 builder.Services.AddScoped<CommentWriteService>();
+builder.Services.AddScoped<LikeService>();
+builder.Services.AddScoped<AcceptanceService>();
 builder.Services.AddSingleton<PublicSiteLinks>();
 builder.Services.Configure<AccountSecurityOptions>(builder.Configuration.GetSection("Account"));
 builder.Services.AddScoped<AuditRequestContextFactory>();
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<InviteRevealCache>();
 builder.Services.AddSingleton<ServiceTokenRevealCache>();
+builder.Services.AddSingleton<EditorDraftStore>();
+builder.Services.AddSingleton<CommentDraftStore>();
 builder.Services.AddScoped<IAuthorizationHandler, AdminAuthorizationHandler>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.Configure<CopyCounterOptions>(builder.Configuration.GetSection("CopyCounter"));
@@ -207,7 +223,7 @@ builder.Services.AddAntiforgery(options =>
 });
 builder.Services.Configure<FormOptions>(options =>
 {
-    options.MultipartBodyLengthLimit = maxFormBodyBytes;
+    options.MultipartBodyLengthLimit = Math.Max(maxFormBodyBytes, maxImageUploadBytes);
     options.ValueLengthLimit = (int)Math.Min(maxFormBodyBytes, int.MaxValue);
     options.ValueCountLimit = 1024;
     options.KeyLengthLimit = 512;
@@ -227,6 +243,15 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
             : CookieSecurePolicy.Always;
         options.ExpireTimeSpan = TimeSpan.FromHours(8);
         options.SlidingExpiration = true;
+        options.Events.OnValidatePrincipal = async context =>
+        {
+            var validator = context.HttpContext.RequestServices.GetRequiredService<SessionValidator>();
+            if (!await validator.IsValidAsync(context.Principal, context.HttpContext.RequestAborted))
+            {
+                context.RejectPrincipal();
+                await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+            }
+        };
         options.Events.OnRedirectToAccessDenied = context =>
         {
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
@@ -342,10 +367,35 @@ builder.Services.AddRateLimiter(options =>
 
 var app = builder.Build();
 
+if (!app.Environment.IsDevelopment())
+{
+    var allowedHosts = builder.Configuration["AllowedHosts"];
+    if (string.IsNullOrWhiteSpace(allowedHosts) || allowedHosts.Contains('*'))
+    {
+        throw new InvalidOperationException(
+            "AllowedHosts must list explicit production host names.");
+    }
+}
+
 if (forwardedHeadersEnabled)
 {
     app.UseForwardedHeaders();
 }
+
+app.Use(async (context, next) =>
+{
+    var headers = context.Response.Headers;
+    headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+    headers["X-Content-Type-Options"] = "nosniff";
+    headers["X-Frame-Options"] = "SAMEORIGIN";
+    headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()";
+    headers["Content-Security-Policy-Report-Only"] =
+        "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; " +
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; " +
+        "font-src 'self' data:; connect-src 'self' ws: wss:; object-src 'none'; " +
+        "base-uri 'self'; form-action 'self'; frame-ancestors 'self'";
+    await next();
+});
 
 var requestUserHashKey = string.IsNullOrWhiteSpace(ipHashSecret)
     ? null
@@ -378,7 +428,7 @@ app.Use(async (context, next) =>
     }
 });
 
-UseFormBodySizeLimit(app, maxFormBodyBytes);
+UseFormBodySizeLimit(app, maxFormBodyBytes, maxImageUploadBytes);
 UseLocalMediaStaticFiles(app);
 
 app.Use(async (context, next) =>
@@ -417,19 +467,21 @@ app.MapGet("/healthz", () => Results.Ok(new
     service = "whalepod-web"
 }));
 
-app.MapGet("/healthz/ready", async (WhalePodDbContext db, ILogger<Program> logger, CancellationToken cancellationToken) =>
+app.MapGet("/healthz/ready", async (
+    WhalePodDbContext db,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
 {
-    try
+    var readiness = await DatabaseReadiness.CheckAsync(db, cancellationToken);
+    if (readiness.Ready)
     {
-        return await db.Database.CanConnectAsync(cancellationToken)
-            ? Results.Ok(new { status = "ready", database = "ok" })
-            : Results.Json(new { status = "not_ready", database = "unavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        return Results.Ok(new { status = "ready", database = "ok" });
     }
-    catch (Exception exception)
-    {
-        logger.LogWarning(exception, "Database readiness check failed.");
-        return Results.Json(new { status = "not_ready", database = "unavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable);
-    }
+
+    logger.LogWarning("Database readiness check failed: {Reason}.", readiness.Reason);
+    return Results.Json(
+        new { status = "not_ready", database = "unavailable", reason = readiness.Reason },
+        statusCode: StatusCodes.Status503ServiceUnavailable);
 });
 
 app.MapGet("/dev/test-login", async (
@@ -475,14 +527,26 @@ app.MapGet("/dev/test-login", async (
 
     await adminBootstrap.EnsureAdminAsync(user, auditContextFactory.Create(user.Id), http.RequestAborted);
 
+    var issuedAt = DateTimeOffset.UtcNow;
+    var absoluteExpiry = issuedAt.AddHours(absoluteSessionHours);
     var identity = new ClaimsIdentity(
     [
         new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
         new Claim(ClaimTypes.Name, user.Handle),
-        new Claim(ClaimTypes.Role, user.Role)
+        new Claim(ClaimTypes.Role, user.Role),
+        new Claim(SessionClaims.Version, user.SessionVersion.ToString(CultureInfo.InvariantCulture)),
+        new Claim(SessionClaims.AbsoluteExpiry, absoluteExpiry.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture)),
+        new Claim("auth_time", issuedAt.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture))
     ], CookieAuthenticationDefaults.AuthenticationScheme);
 
-    await http.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity));
+    await http.SignInAsync(
+        CookieAuthenticationDefaults.AuthenticationScheme,
+        new ClaimsPrincipal(identity),
+        new AuthenticationProperties
+        {
+            IsPersistent = false,
+            ExpiresUtc = absoluteExpiry
+        });
     return Results.Redirect(user.ActivatedAt is null ? "/activate" : "/");
 });
 
@@ -518,7 +582,10 @@ app.MapPost("/activate/redeem", async (
         : Results.Redirect("/activate?error=invalid");
 }).RequireAuthorization().RequireRateLimiting("invite-redeem");
 
-app.MapPost("/logout", async (HttpContext http, IAntiforgery antiforgery) =>
+app.MapPost("/logout", async (
+    HttpContext http,
+    IAntiforgery antiforgery,
+    WhalePodDbContext db) =>
 {
     try
     {
@@ -527,6 +594,18 @@ app.MapPost("/logout", async (HttpContext http, IAntiforgery antiforgery) =>
     catch (AntiforgeryValidationException)
     {
         return Results.BadRequest();
+    }
+
+    if (Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
+    {
+        var now = DateTimeOffset.UtcNow;
+        await db.Users
+            .Where(user => user.Id == userId)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(user => user.SessionVersion, user => user.SessionVersion + 1)
+                    .SetProperty(user => user.UpdatedAt, now),
+                http.RequestAborted);
     }
 
     await http.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
@@ -1169,6 +1248,7 @@ app.MapPost("/posts/{postId:guid}/comments", async (
     HttpContext http,
     IAntiforgery antiforgery,
     CommentWriteService comments,
+    CommentDraftStore drafts,
     AuditRequestContextFactory auditContextFactory,
     ILogger<Program> logger) =>
 {
@@ -1184,12 +1264,14 @@ app.MapPost("/posts/{postId:guid}/comments", async (
     }
 
     var form = await http.Request.ReadFormAsync(http.RequestAborted);
+    var bodyMd = form["bodyMd"].ToString();
     Guid? parentId = null;
     if (!string.IsNullOrWhiteSpace(form["parentId"]))
     {
         if (!Guid.TryParse(form["parentId"], out var parsedParent))
         {
-            return Results.Redirect($"/posts/{postId}?error=invalid");
+            drafts.Save(userId, postId, null, bodyMd);
+            return Results.Redirect($"/posts/{postId}?error=invalid&restored=1");
         }
 
         parentId = parsedParent;
@@ -1200,14 +1282,16 @@ app.MapPost("/posts/{postId:guid}/comments", async (
         await comments.CreateAsync(
             userId,
             postId,
-            new CommentCreateCommand(form["bodyMd"].ToString(), parentId),
+            new CommentCreateCommand(bodyMd, parentId),
             auditContextFactory.Create(userId),
             http.RequestAborted);
+        drafts.Clear(userId);
         return Results.Redirect($"/posts/{postId}?message=pending");
     }
     catch (ApiProblemException exception)
     {
-        return Results.Redirect($"/posts/{postId}?error={MapCommentError(exception)}");
+        drafts.Save(userId, postId, parentId, bodyMd);
+        return Results.Redirect($"/posts/{postId}?error={MapCommentError(exception)}&restored=1");
     }
 }).RequireAuthorization();
 
@@ -1215,6 +1299,7 @@ app.MapPost("/editor/create", async (
     HttpContext http,
     IAntiforgery antiforgery,
     PostWriteService posts,
+    EditorDraftStore drafts,
     AuditRequestContextFactory auditContextFactory,
     ILogger<Program> logger) =>
 {
@@ -1232,24 +1317,74 @@ app.MapPost("/editor/create", async (
     var form = await http.Request.ReadFormAsync(http.RequestAborted);
     if (!Guid.TryParse(form["categoryId"], out var categoryId))
     {
-        return Results.Redirect("/editor?error=validation&field=categoryId");
+        SaveEditorSnapshot(drafts, userId, form);
+        return Results.Redirect("/editor?error=validation&field=categoryId&restored=1");
     }
 
+    var imageIdValues = form["imageIds"];
+    var imageAltValues = form["imageAlt"];
     List<PostImageInput>? images = null;
-    var imageIdsText = form["imageIds"].ToString().Trim();
-    if (imageIdsText.Length > 0)
+    if (imageIdValues.Count != imageAltValues.Count)
     {
-        var imageIds = imageIdsText
-            .Split([',', '，', ' ', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .ToList();
-        if (imageIds.Count > 10 || imageIds.Any(value => !Guid.TryParse(value, out _)))
+        SaveEditorSnapshot(drafts, userId, form);
+        return Results.Redirect("/editor?error=validation&field=imageIds&restored=1");
+    }
+
+    if (imageIdValues.Count > 10)
+    {
+        SaveEditorSnapshot(drafts, userId, form);
+        return Results.Redirect("/editor?error=validation&field=images&restored=1");
+    }
+
+    if (imageIdValues.Count > 0)
+    {
+        images = new List<PostImageInput>(imageIdValues.Count);
+        for (var index = 0; index < imageIdValues.Count; index++)
         {
-            return Results.Redirect("/editor?error=validation&field=imageIds");
+            if (!Guid.TryParse(imageIdValues[index], out var imageId))
+            {
+                SaveEditorSnapshot(drafts, userId, form);
+                return Results.Redirect("/editor?error=validation&field=imageIds&restored=1");
+            }
+
+            var alt = FormValue(form, "imageAlt", index).Trim();
+            images.Add(new PostImageInput(imageId, alt.Length == 0 ? null : alt));
         }
 
-        images = imageIds
-            .Select(value => new PostImageInput(Guid.Parse(value), null))
-            .ToList();
+        if (images.Select(image => image.Id).Distinct().Count() != images.Count)
+        {
+            SaveEditorSnapshot(drafts, userId, form);
+            return Results.Redirect("/editor?error=validation&field=imageIds&restored=1");
+        }
+    }
+
+    var artifactCount = Math.Max(
+        Math.Max(form["artifactKind"].Count, form["artifactName"].Count),
+        Math.Max(form["artifactNote"].Count, form["artifactContent"].Count));
+    if (artifactCount > 5)
+    {
+        SaveEditorSnapshot(drafts, userId, form);
+        return Results.Redirect("/editor?error=validation&field=artifacts&restored=1");
+    }
+
+    List<ArtifactInput>? artifacts = null;
+    for (var index = 0; index < artifactCount; index++)
+    {
+        var kind = FormValue(form, "artifactKind", index);
+        var name = FormValue(form, "artifactName", index).Trim();
+        var note = FormValue(form, "artifactNote", index);
+        var content = FormValue(form, "artifactContent", index);
+        if (kind.Length == 0 && name.Length == 0 && note.Length == 0 && content.Length == 0)
+        {
+            continue;
+        }
+
+        artifacts ??= [];
+        artifacts.Add(new ArtifactInput(
+            kind,
+            name,
+            string.IsNullOrWhiteSpace(note) ? null : note,
+            content));
     }
 
     var tags = form["tags"]
@@ -1266,18 +1401,6 @@ app.MapPost("/editor/create", async (
             kernel.Length == 0 ? null : kernel,
             platform.Length == 0 ? null : platform,
             model.Length == 0 ? null : model);
-    var artifactName = form["artifactName"].ToString().Trim();
-    var artifactContent = form["artifactContent"].ToString();
-    var artifacts = artifactName.Length == 0 && string.IsNullOrWhiteSpace(artifactContent)
-        ? null
-        : new List<ArtifactInput>
-        {
-            new(
-                form["artifactKind"].ToString(),
-                artifactName,
-                string.IsNullOrWhiteSpace(form["artifactNote"]) ? null : form["artifactNote"].ToString(),
-                artifactContent)
-        };
 
     try
     {
@@ -1293,18 +1416,20 @@ app.MapPost("/editor/create", async (
                 images),
             auditContextFactory.Create(userId),
             http.RequestAborted);
+        drafts.Clear(userId);
         return Results.Redirect($"/posts/{created.Id}?message=post-pending");
     }
     catch (ApiProblemException exception)
     {
+        SaveEditorSnapshot(drafts, userId, form);
         return exception.Code switch
         {
-            ApiErrorCodes.AccountMuted => Results.Redirect("/editor?error=muted"),
-            ApiErrorCodes.AccountBanned => Results.Redirect("/editor?error=banned"),
-            ApiErrorCodes.Forbidden => Results.Redirect("/editor?error=auth"),
+            ApiErrorCodes.AccountMuted => Results.Redirect("/editor?error=muted&restored=1"),
+            ApiErrorCodes.AccountBanned => Results.Redirect("/editor?error=banned&restored=1"),
+            ApiErrorCodes.Forbidden => Results.Redirect("/editor?error=auth&restored=1"),
             ApiErrorCodes.ValidationFailed => Results.Redirect(
-                $"/editor?error=validation&field={Uri.EscapeDataString(DetailField(exception) ?? "unknown")}"),
-            _ => Results.Redirect("/editor?error=invalid")
+                $"/editor?error=validation&field={Uri.EscapeDataString(DetailField(exception) ?? "unknown")}&restored=1"),
+            _ => Results.Redirect("/editor?error=invalid&restored=1")
         };
     }
 }).RequireAuthorization();
@@ -1358,8 +1483,46 @@ app.MapGet("/sitemap.xml", async (
     PublicDiscoveryService discovery,
     PublicSiteLinks siteLinks) =>
 {
-    var document = await discovery.GetSitemapAsync(5000, http.RequestAborted);
-    if (TryWriteNotModified(http, document.LastModified, "sitemap"))
+    var document = await discovery.GetSitemapIndexAsync(5000, http.RequestAborted);
+    if (TryWriteNotModified(http, document.LastModified, "sitemap-index"))
+    {
+        return Results.StatusCode(StatusCodes.Status304NotModified);
+    }
+
+    return Results.Text(
+        RenderSitemapIndex(document.Shards, siteLinks),
+        "application/xml; charset=utf-8");
+});
+
+app.MapGet("/sitemap-posts-{page:int}.xml", async (
+    int page,
+    HttpContext http,
+    PublicDiscoveryService discovery,
+    PublicSiteLinks siteLinks) =>
+{
+    var document = await discovery.GetPostSitemapShardAsync(page, 5000, http.RequestAborted);
+    if (document is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (TryWriteNotModified(http, document.LastModified, $"sitemap-posts-{page}"))
+    {
+        return Results.StatusCode(StatusCodes.Status304NotModified);
+    }
+
+    return Results.Text(
+        RenderSitemap(document.Entries, siteLinks),
+        "application/xml; charset=utf-8");
+});
+
+app.MapGet("/sitemap-pages.xml", async (
+    HttpContext http,
+    PublicDiscoveryService discovery,
+    PublicSiteLinks siteLinks) =>
+{
+    var document = await discovery.GetPageSitemapAsync(http.RequestAborted);
+    if (TryWriteNotModified(http, document.LastModified, "sitemap-pages"))
     {
         return Results.StatusCode(StatusCodes.Status304NotModified);
     }
@@ -1951,6 +2114,8 @@ app.MapPost("/admin/moderation/words/policy", async (
 }).RequireAuthorization("AdminOnly");
 
 app.MapAdminConsoleEndpoints();
+app.MapInteractionEndpoints();
+app.MapEditorEndpoints();
 app.MapGitHubOAuthEndpoints();
 
 app.MapRazorComponents<App>()
@@ -2023,7 +2188,7 @@ static string? UserReference(HttpContext context, byte[]? hashKey)
     return Convert.ToHexString(hash.AsSpan(0, 6)).ToLowerInvariant();
 }
 
-static void UseFormBodySizeLimit(WebApplication app, long maxBytes)
+static void UseFormBodySizeLimit(WebApplication app, long maxBytes, long maxImageBytes)
 {
     app.Use(async (context, next) =>
     {
@@ -2033,13 +2198,14 @@ static void UseFormBodySizeLimit(WebApplication app, long maxBytes)
             return;
         }
 
-        if (context.Request.ContentLength is long declaredLength && declaredLength > maxBytes)
+        var limit = context.Request.Path.StartsWithSegments("/editor/images") ? maxImageBytes : maxBytes;
+        if (context.Request.ContentLength is long declaredLength && declaredLength > limit)
         {
             await WriteFormBodyTooLargeAsync(context);
             return;
         }
 
-        context.Request.Body = new SizeLimitedWebRequestBodyStream(context.Request.Body, maxBytes);
+        context.Request.Body = new SizeLimitedWebRequestBodyStream(context.Request.Body, limit);
         try
         {
             await next();
@@ -2229,6 +2395,27 @@ static bool TryWriteNotModified(
     return false;
 }
 
+static string RenderSitemapIndex(
+    IReadOnlyList<SitemapShard> shards,
+    PublicSiteLinks siteLinks)
+{
+    XNamespace sitemap = "http://www.sitemaps.org/schemas/sitemap/0.9";
+    var document = new XDocument(
+        new XDeclaration("1.0", "utf-8", null),
+        new XElement(
+            sitemap + "sitemapindex",
+            shards
+                .GroupBy(shard => shard.Path, StringComparer.Ordinal)
+                .Select(group => group.First())
+                .Select(shard => new XElement(
+                    sitemap + "sitemap",
+                    new XElement(sitemap + "loc", siteLinks.Absolute(shard.Path)),
+                    new XElement(
+                        sitemap + "lastmod",
+                        shard.LastModified.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture))))));
+    return document.ToString(SaveOptions.DisableFormatting);
+}
+
 static string RenderSitemap(
     IReadOnlyList<SitemapEntry> entries,
     PublicSiteLinks siteLinks)
@@ -2316,6 +2503,53 @@ static string? DetailField(ApiProblemException exception)
         : null;
 }
 
+static string FormValue(IFormCollection form, string key, int index)
+{
+    var values = form[key];
+    return index < values.Count ? values[index] ?? string.Empty : string.Empty;
+}
+
+static void SaveEditorSnapshot(EditorDraftStore drafts, Guid userId, IFormCollection form)
+{
+    var imageIds = form["imageIds"];
+    var imageAlts = form["imageAlt"];
+    var images = new List<EditorImageRef>();
+    var imageCount = Math.Min(imageIds.Count, imageAlts.Count);
+    for (var index = 0; index < imageCount; index++)
+    {
+        if (Guid.TryParse(imageIds[index], out var imageId))
+        {
+            images.Add(new EditorImageRef(imageId, imageAlts[index] ?? string.Empty));
+        }
+    }
+
+    var artifacts = new List<EditorArtifact>(5);
+    for (var index = 0; index < 5; index++)
+    {
+        artifacts.Add(new EditorArtifact(
+            FormValue(form, "artifactKind", index),
+            FormValue(form, "artifactName", index),
+            FormValue(form, "artifactNote", index),
+            FormValue(form, "artifactContent", index)));
+    }
+
+    var tags = form["tags"]
+        .Where(value => !string.IsNullOrWhiteSpace(value))
+        .Select(value => value!.Trim())
+        .Take(20)
+        .ToList();
+    drafts.SaveSnapshot(userId, new EditorSnapshot(
+        form["title"].ToString(),
+        form["categoryId"].ToString(),
+        form["bodyMd"].ToString(),
+        form["kernel"].ToString(),
+        form["platform"].ToString(),
+        form["model"].ToString(),
+        tags,
+        artifacts,
+        images));
+}
+
 static IResult UnsubscribeResult(int statusCode, string title, string message)
 {
     var encodedTitle = WebUtility.HtmlEncode(title);
@@ -2395,48 +2629,17 @@ static IResult StoreInviteReveal(
     return Results.Redirect("/admin/invites/created");
 }
 
-static async Task<IResult?> ValidateFormAsync(
+static Task<IResult?> ValidateFormAsync(
     HttpContext http,
     IAntiforgery antiforgery,
     ILogger logger)
 {
-    if (!IsSameOrigin(http))
-    {
-        logger.LogWarning("Form rejected for cross-origin request to {Path}.", http.Request.Path);
-        return Results.StatusCode(StatusCodes.Status403Forbidden);
-    }
-
-    try
-    {
-        await antiforgery.ValidateRequestAsync(http);
-        return null;
-    }
-    catch (AntiforgeryValidationException)
-    {
-        logger.LogWarning(
-            "Form rejected for a missing or invalid antiforgery token at {Path}.",
-            http.Request.Path);
-        return Results.BadRequest();
-    }
+    return WebFormGuard.ValidateAsync(http, antiforgery, logger);
 }
 
 static bool IsSameOrigin(HttpContext context)
 {
-    var origin = context.Request.Headers.Origin.ToString();
-    if (!string.IsNullOrWhiteSpace(origin))
-    {
-        if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri))
-        {
-            return false;
-        }
-
-        var requestPort = context.Request.Host.Port ?? (context.Request.IsHttps ? 443 : 80);
-        return string.Equals(uri.Host, context.Request.Host.Host, StringComparison.OrdinalIgnoreCase)
-            && uri.Port == requestPort;
-    }
-
-    var fetchSite = context.Request.Headers["Sec-Fetch-Site"].ToString();
-    return string.IsNullOrWhiteSpace(fetchSite) || fetchSite is "same-origin" or "none";
+    return WebFormGuard.IsSameOrigin(context);
 }
 
 static void ConfigureForwardedHeaders(WebApplicationBuilder builder)

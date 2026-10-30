@@ -13,14 +13,14 @@ namespace WhalePod.Tests.Integration;
 
 internal static class ServiceTestSupport
 {
-    public static string ConnectionString =>
-        Environment.GetEnvironmentVariable("WHALEPOD_TEST_DB_CONNECTION")
-        ?? throw new InvalidOperationException("WHALEPOD_TEST_DB_CONNECTION is required.");
+    public static string ConnectionString => TestDatabaseGuard.FromEnvironment();
 
     public static WhalePodDbContext CreateContext()
     {
+        var connectionString = ConnectionString;
+        TestDatabaseGuard.EnsureServerMatches(connectionString);
         var options = new DbContextOptionsBuilder<WhalePodDbContext>()
-            .UseNpgsql(ConnectionString)
+            .UseNpgsql(connectionString)
             .UseSnakeCaseNamingConvention()
             .Options;
         return new WhalePodDbContext(options);

@@ -8,6 +8,24 @@
 | 环境 | Windows 11；.NET 10；PostgreSQL 18.6（本地开发实例 `127.0.0.1:55432`，`shared_buffers=32MB`、`max_connections=30`）；k6 2.2.0 |
 | 结论范围 | **仅本地开发实例的缩短时长压测，不构成生产容量承诺**；未连接预发/生产，未启用 CDN/WAF |
 
+## 0. 10 分钟容量门禁（未执行）
+
+[P2-30] 本地结果均为缩短时长（20–60 秒），**不构成 10 分钟容量通过**。正式门禁需在预发/生产等价环境执行：
+
+```bash
+# 正式身份：从秘密存储注入会话与 CSRF（不要使用开发登录）
+export BASE_URL=https://<site> API_BASE=https://<site> WEB_BASE=https://<site>
+export AUTH_COOKIE='whalepod_session=...; whalepod_csrf=...' CSRF_TOKEN='...'
+export DURATION=10m
+k6 run tests/load/public-read.js
+k6 run tests/load/copy-counter.js
+k6 run tests/load/upload-images.js
+```
+
+- 阈值：`http_req_failed rate<0.01`、`p95`/`p99` 按场景门槛、`checks rate>0.99`、`dropped_iterations count<100`；任一失败 k6 退出码非零。
+- 需同时记录：提交 SHA、镜像 digest、数据库规格、连接池、CDN/WAF 状态、错误率与丢弃迭代，并附 k6 summary JSON/控制台日志。
+- 未执行项：真实 10 分钟三场景、预发 100+ rps SSR、CDN/WAF 与数据库连接上限下的容量结论。
+
 ## 1. 复制计数端点
 
 被测端点：`POST /internal/counters/copy`（同源校验 + 10 分钟去重 + 原子计数）。脚本：[tests/load/copy-counter-tiers.js](../../tests/load/copy-counter-tiers.js)。

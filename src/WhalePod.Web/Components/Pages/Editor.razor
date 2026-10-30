@@ -4,7 +4,9 @@
 @using System.Security.Claims
 @using Microsoft.AspNetCore.Antiforgery
 @using WhalePod.Infrastructure.Services
+@using WhalePod.Web.Services
 @inject PublicContentService PublicContent
+@inject EditorDraftStore Drafts
 @inject IAntiforgery Antiforgery
 @inject IHttpContextAccessor HttpContextAccessor
 
@@ -19,13 +21,30 @@
     <div class="masthead-meta">
         <span>Markdown</span>
         <span>服务端预览</span>
+        <span>图片直传</span>
         <span>草稿保存在本机</span>
     </div>
 </header>
 
+@if (MessageText is not null)
+{
+    <p class="alert alert-success" role="status">@MessageText</p>
+}
+
 @if (ErrorMessage is not null)
 {
     <p class="alert alert-error" role="alert">@ErrorMessage</p>
+}
+
+@if (HasSnapshot)
+{
+    <div class="draft-banner panel" role="status">
+        <p>已恢复上次提交失败时保留的内容（含图片、产物与标签）。</p>
+        <form method="post" action="/editor/draft/discard">
+            <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+            <button type="submit" class="button-secondary">放弃恢复内容</button>
+        </form>
+    </div>
 }
 
 @if (Categories.Count == 0)
@@ -42,6 +61,42 @@ else
         </div>
     </div>
 
+    <section class="editor-panel editor-image-upload" aria-labelledby="image-upload-heading">
+        <div class="editor-panel-head">
+            <h2 id="image-upload-heading">上传图片</h2>
+            <span class="mono-meta">@Images.Count / 10</span>
+        </div>
+        <p class="muted">
+            支持 JPG、PNG、WebP、GIF，单张不超过 10 MB，每帖最多 10 张。上传后由服务端重编码为 WebP 并去除 EXIF/GPS 等元数据。
+        </p>
+        @if (Images.Count >= 10)
+        {
+            <p class="alert alert-warning">已达到每帖 10 张图片上限；移除一张后可继续上传。</p>
+        }
+        else
+        {
+            <form id="editor-image-upload" method="post" action="/editor/images"
+                  enctype="multipart/form-data" data-image-upload>
+                <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+                <input type="hidden" name="returnUrl" value="/editor" />
+                <div class="form-grid">
+                    <p>
+                        <label for="image-upload-file">图片文件</label>
+                        <input id="image-upload-file" type="file" name="file"
+                               accept="image/jpeg,image/png,image/webp,image/gif" required />
+                    </p>
+                    <p>
+                        <label for="image-upload-alt">替代文本（可选，≤200 字）</label>
+                        <input id="image-upload-alt" name="alt" maxlength="200" />
+                    </p>
+                </div>
+                <progress id="image-upload-progress" value="0" max="100" hidden></progress>
+                <p id="image-upload-status" class="muted" role="status" aria-live="polite"></p>
+                <button type="submit">上传图片</button>
+            </form>
+        }
+    </section>
+
     <form id="editor-form" class="editor-form" data-editor-form method="post" action="/editor/create">
         <input type="hidden" name="__RequestVerificationToken" value="@Token" />
 
@@ -54,14 +109,19 @@ else
                     <p>
                         <label for="editor-title">标题（8-200 字）</label>
                         <input id="editor-title" name="title" minlength="8" maxlength="200" required
+                               value="@Title"
                                placeholder="把实验结论写清楚，例如：在某环境下复现某工具的三步记录" />
                     </p>
                     <p>
                         <label for="editor-category">板块</label>
                         <select id="editor-category" name="categoryId" required>
+                            @if (CategoryId.Length > 0 && !Categories.Any(category => category.Id.ToString() == CategoryId))
+                            {
+                                <option value="@CategoryId" selected>已选板块不可用</option>
+                            }
                             @foreach (var category in Categories)
                             {
-                                <option value="@category.Id">@category.Name</option>
+                                <option value="@category.Id" selected="@(category.Id.ToString() == CategoryId)">@category.Name</option>
                             }
                         </select>
                     </p>
@@ -77,7 +137,7 @@ else
                     <div id="editor-body-block">
                         <label for="editor-body">正文（Markdown，10-60,000 字）</label>
                         <textarea id="editor-body" name="bodyMd" rows="16" minlength="10" maxlength="60000" required
-                                  placeholder="说明实验目标、步骤、观察结果与结论；可以使用 Markdown。"></textarea>
+                                  placeholder="说明实验目标、步骤、观察结果与结论；可以使用 Markdown。">@BodyMd</textarea>
                     </div>
                     <div id="editor-preview" class="editor-preview" aria-label="正文预览" hidden></div>
                 </section>
@@ -89,23 +149,21 @@ else
                     <div class="form-grid">
                         <p>
                             <label for="editor-kernel">内核</label>
-                            <input id="editor-kernel" name="kernel" maxlength="64" />
+                            <input id="editor-kernel" name="kernel" maxlength="64" value="@Kernel" />
                         </p>
                         <p>
                             <label for="editor-platform">平台</label>
                             <select id="editor-platform" name="platform">
                                 <option value="">未填写</option>
-                                <option value="win32-x64">win32-x64</option>
-                                <option value="win32-arm64">win32-arm64</option>
-                                <option value="darwin-x64">darwin-x64</option>
-                                <option value="darwin-arm64">darwin-arm64</option>
-                                <option value="linux-x64">linux-x64</option>
-                                <option value="linux-arm64">linux-arm64</option>
+                                @foreach (var platform in PlatformOptions)
+                                {
+                                    <option value="@platform" selected="@(platform == Platform)">@platform</option>
+                                }
                             </select>
                         </p>
                         <p>
                             <label for="editor-model">模型</label>
-                            <input id="editor-model" name="model" maxlength="100" />
+                            <input id="editor-model" name="model" maxlength="100" value="@Model" />
                         </p>
                     </div>
                 </fieldset>
@@ -118,58 +176,104 @@ else
                     }
                     else
                     {
-                        <div class="tag-choices">
+                        <p>
+                            <label for="tag-filter">筛选标签</label>
+                            <input id="tag-filter" type="search" placeholder="输入名称过滤" autocomplete="off" />
+                        </p>
+                        <p id="tag-limit-status" class="muted" role="status" aria-live="polite"></p>
+                        <div class="tag-choices tag-choices-scroll" data-tag-choices>
                             @foreach (var tag in Tags)
                             {
-                                <label class="tag-choice">
-                                    <input type="checkbox" name="tags" value="@tag.Slug" />
+                                <label class="tag-choice" data-tag-choice>
+                                    <input type="checkbox" name="tags" value="@tag.Slug"
+                                           checked="@SelectedTags.Contains(tag.Slug)" />
                                     @tag.Name
                                 </label>
                             }
                         </div>
+                        @if (TagsTruncated)
+                        {
+                            <p class="muted">标签数量超过 1,000 个，仅显示前 1,000 个；请联系管理员清理未使用标签。</p>
+                        }
                     }
                 </fieldset>
 
                 <fieldset class="editor-panel">
-                    <legend>已上传图片 ID（可选）</legend>
-                    <p class="muted editor-hint">
-                        通过 <code>POST /api/v1/uploads/images</code> 上传后，将以逗号分隔的上传 ID 填入此处；最多 10 张。
-                    </p>
-                    <p>
-                        <label for="editor-image-ids">图片上传 ID</label>
-                        <input id="editor-image-ids" name="imageIds" maxlength="400"
-                               placeholder="例如：018f...,018f..." />
-                    </p>
+                    <legend>帖子图片（@Images.Count / 10）</legend>
+                    @if (Images.Count == 0)
+                    {
+                        <p class="muted">尚未上传图片。可在上方上传，并为每张图片填写替代文本。</p>
+                    }
+                    else
+                    {
+                        <ul class="editor-image-list">
+                            @foreach (var image in Images)
+                            {
+                                <li>
+                                    <img src="@image.Url" alt="@image.AltText" width="96" height="96" loading="lazy" />
+                                    <div class="editor-image-fields">
+                                        <code>@image.Url</code>
+                                        <label for="image-alt-@image.Id">替代文本（≤200 字）</label>
+                                        <input id="image-alt-@image.Id" name="imageAlt" maxlength="200"
+                                               value="@image.AltText" />
+                                        <input type="hidden" name="imageIds" value="@image.Id" />
+                                        <div class="editor-image-actions">
+                                            <button type="button" class="link-button"
+                                                    data-insert-image data-image-url="@image.Url"
+                                                    data-image-alt="@image.AltText">插入正文</button>
+                                            <button type="submit" class="link-button"
+                                                    form="remove-image-@image.Id">移除</button>
+                                        </div>
+                                    </div>
+                                </li>
+                            }
+                        </ul>
+                    }
                 </fieldset>
 
-                <fieldset class="editor-panel">
-                    <legend>产物（可选，最多 1 份）</legend>
-                    <div class="form-grid">
+                @for (var index = 0; index < Artifacts.Count; index++)
+                {
+                    var artifact = Artifacts[index];
+                    var row = index;
+                    <fieldset class="editor-panel artifact-row" data-artifact-row>
+                        <legend>产物 @(row + 1)（可选）</legend>
+                        <div class="artifact-row-actions">
+                            <button type="button" class="button-secondary button-compact"
+                                    data-artifact-action="clear">清空</button>
+                            <button type="button" class="button-secondary button-compact"
+                                    data-artifact-action="up">上移</button>
+                            <button type="button" class="button-secondary button-compact"
+                                    data-artifact-action="down">下移</button>
+                        </div>
+                        <div class="form-grid">
+                            <p>
+                                <label for="artifact-kind-@row">类型</label>
+                                <select id="artifact-kind-@row" name="artifactKind">
+                                    <option value="" selected="@(string.IsNullOrEmpty(artifact.Kind))">未使用</option>
+                                    @foreach (var kind in ArtifactKinds)
+                                    {
+                                        <option value="@kind" selected="@(artifact.Kind == kind)">@kind</option>
+                                    }
+                                </select>
+                            </p>
+                            <p>
+                                <label for="artifact-name-@row">名称（必填 1-120 字）</label>
+                                <input id="artifact-name-@row" name="artifactName" maxlength="120"
+                                       value="@artifact.Name" />
+                            </p>
+                            <p>
+                                <label for="artifact-note-@row">说明（可选，≤200 字）</label>
+                                <input id="artifact-note-@row" name="artifactNote" maxlength="200"
+                                       value="@artifact.Note" />
+                            </p>
+                        </div>
                         <p>
-                            <label for="editor-artifact-kind">类型</label>
-                            <select id="editor-artifact-kind" name="artifactKind">
-                                <option value="shell">shell</option>
-                                <option value="patch">patch</option>
-                                <option value="yaml">yaml</option>
-                                <option value="json">json</option>
-                                <option value="bundle">bundle</option>
-                                <option value="markdown">markdown</option>
-                            </select>
+                            <label for="artifact-content-@row">内容（纯文本，1-200,000 字）</label>
+                            <textarea id="artifact-content-@row" name="artifactContent" rows="5"
+                                      maxlength="200000">@artifact.Content</textarea>
                         </p>
-                        <p>
-                            <label for="editor-artifact-name">名称</label>
-                            <input id="editor-artifact-name" name="artifactName" maxlength="120" />
-                        </p>
-                        <p>
-                            <label for="editor-artifact-note">说明</label>
-                            <input id="editor-artifact-note" name="artifactNote" maxlength="200" />
-                        </p>
-                    </div>
-                    <p>
-                        <label for="editor-artifact-content">内容（纯文本）</label>
-                        <textarea id="editor-artifact-content" name="artifactContent" rows="6" maxlength="200000"></textarea>
-                    </p>
-                </fieldset>
+                    </fieldset>
+                }
             </aside>
         </div>
 
@@ -183,6 +287,194 @@ else
             </div>
         </div>
     </form>
+
+    @foreach (var image in Images)
+    {
+        <form id="remove-image-@image.Id" method="post"
+              action="/editor/images/@image.Id/remove" class="hidden-form">
+            <input type="hidden" name="__RequestVerificationToken" value="@Token" />
+        </form>
+    }
+
+    <script>
+        (function () {
+            function initializeImageUpload() {
+                var form = document.querySelector('[data-image-upload]');
+                if (!form) {
+                    return;
+                }
+
+                var progress = document.getElementById('image-upload-progress');
+                var status = document.getElementById('image-upload-status');
+                var button = form.querySelector('button[type="submit"]');
+                form.addEventListener('submit', function (event) {
+                    if (!window.XMLHttpRequest || !window.FormData) {
+                        return;
+                    }
+
+                    event.preventDefault();
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('POST', form.action);
+                    xhr.setRequestHeader('Accept', 'application/json');
+                    if (progress) {
+                        progress.hidden = false;
+                        progress.value = 0;
+                    }
+                    if (status) {
+                        status.textContent = '正在上传…';
+                    }
+                    if (button) {
+                        button.disabled = true;
+                    }
+
+                    xhr.upload.addEventListener('progress', function (uploadEvent) {
+                        if (progress && uploadEvent.lengthComputable) {
+                            progress.value = Math.round((uploadEvent.loaded / uploadEvent.total) * 100);
+                        }
+                    });
+                    xhr.addEventListener('load', function () {
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            if (status) {
+                                status.textContent = '上传成功，正在刷新…';
+                            }
+                            window.location.href = '/editor?message=image-uploaded';
+                            return;
+                        }
+
+                        var message = '上传失败，请重试。';
+                        try {
+                            var payload = JSON.parse(xhr.responseText);
+                            if (payload && payload.message) {
+                                message = payload.message;
+                            }
+                        } catch (error) {
+                        }
+                        if (status) {
+                            status.textContent = message;
+                        }
+                        if (button) {
+                            button.disabled = false;
+                        }
+                        if (progress) {
+                            progress.hidden = true;
+                        }
+                    });
+                    xhr.addEventListener('error', function () {
+                        if (status) {
+                            status.textContent = '网络错误，上传失败，请重试。';
+                        }
+                        if (button) {
+                            button.disabled = false;
+                        }
+                    });
+                    xhr.send(new FormData(form));
+                });
+            }
+
+            function initializeInsertImage() {
+                var body = document.getElementById('editor-body');
+                if (!body) {
+                    return;
+                }
+
+                Array.prototype.forEach.call(
+                    document.querySelectorAll('[data-insert-image]'),
+                    function (button) {
+                        button.addEventListener('click', function () {
+                            var markdown = '![' + (button.dataset.imageAlt || '') + ']('
+                                + (button.dataset.imageUrl || '') + ')';
+                            var start = body.selectionStart || 0;
+                            var end = body.selectionEnd || 0;
+                            body.value = body.value.slice(0, start) + markdown + body.value.slice(end);
+                            body.selectionStart = body.selectionEnd = start + markdown.length;
+                            body.focus();
+                        });
+                    });
+            }
+
+            function initializeArtifactRows() {
+                var rows = Array.prototype.slice.call(document.querySelectorAll('[data-artifact-row]'));
+                function fields(row) {
+                    return {
+                        kind: row.querySelector('[name="artifactKind"]'),
+                        name: row.querySelector('[name="artifactName"]'),
+                        note: row.querySelector('[name="artifactNote"]'),
+                        content: row.querySelector('[name="artifactContent"]')
+                    };
+                }
+
+                rows.forEach(function (row, index) {
+                    row.querySelectorAll('[data-artifact-action]').forEach(function (button) {
+                        button.addEventListener('click', function () {
+                            var action = button.dataset.artifactAction;
+                            var target = action === 'up' ? rows[index - 1] : action === 'down' ? rows[index + 1] : null;
+                            var currentFields = fields(row);
+                            if (action === 'clear') {
+                                currentFields.kind.value = currentFields.kind.options[0].value;
+                                currentFields.name.value = '';
+                                currentFields.note.value = '';
+                                currentFields.content.value = '';
+                                return;
+                            }
+
+                            if (!target) {
+                                return;
+                            }
+
+                            var targetFields = fields(target);
+                            ['kind', 'name', 'note', 'content'].forEach(function (key) {
+                                var temporary = currentFields[key].value;
+                                currentFields[key].value = targetFields[key].value;
+                                targetFields[key].value = temporary;
+                            });
+                        });
+                    });
+                });
+            }
+
+            function initializeTagFilters() {
+                var choices = document.querySelector('[data-tag-choices]');
+                var filter = document.getElementById('tag-filter');
+                var limitStatus = document.getElementById('tag-limit-status');
+                if (!choices) {
+                    return;
+                }
+
+                if (filter) {
+                    filter.addEventListener('input', function () {
+                        var query = filter.value.trim().toLowerCase();
+                        Array.prototype.forEach.call(
+                            choices.querySelectorAll('[data-tag-choice]'),
+                            function (choice) {
+                                choice.hidden = query.length > 0
+                                    && choice.textContent.toLowerCase().indexOf(query) < 0;
+                            });
+                    });
+                }
+
+                choices.addEventListener('change', function () {
+                    var checked = choices.querySelectorAll('input[name="tags"]:checked');
+                    if (checked.length > 6) {
+                        var last = checked[checked.length - 1];
+                        last.checked = false;
+                        if (limitStatus) {
+                            limitStatus.textContent = '标签最多选择 6 个。';
+                        }
+                        return;
+                    }
+
+                    if (limitStatus) {
+                        limitStatus.textContent = checked.length + ' / 6 已选择';
+                    }
+                });
+            }
+
+            initializeImageUpload();
+            initializeInsertImage();
+            initializeArtifactRows();
+            initializeTagFilters();
+        })();
+    </script>
 }
 
 <p class="back-link"><a href="/">← 返回信息流</a></p>
@@ -194,9 +486,54 @@ else
     [SupplyParameterFromQuery(Name = "field")]
     public string? Field { get; set; }
 
+    [SupplyParameterFromQuery(Name = "message")]
+    public string? Message { get; set; }
+
+    [SupplyParameterFromQuery(Name = "restored")]
+    public string? Restored { get; set; }
+
+    private static readonly string[] PlatformOptions =
+    [
+        "win32-x64",
+        "win32-arm64",
+        "darwin-x64",
+        "darwin-arm64",
+        "linux-x64",
+        "linux-arm64"
+    ];
+
+    private static readonly string[] ArtifactKinds =
+    [
+        "shell",
+        "patch",
+        "yaml",
+        "json",
+        "bundle",
+        "markdown"
+    ];
+
     private IReadOnlyList<CategoryView> Categories { get; set; } = [];
     private IReadOnlyList<TagView> Tags { get; set; } = [];
+    private IReadOnlyList<EditorPendingImage> Images { get; set; } = [];
+    private IReadOnlyList<EditorArtifact> Artifacts { get; set; } = [];
+    private HashSet<string> SelectedTags { get; set; } = new(StringComparer.Ordinal);
+    private string Title { get; set; } = string.Empty;
+    private string CategoryId { get; set; } = string.Empty;
+    private string BodyMd { get; set; } = string.Empty;
+    private string Kernel { get; set; } = string.Empty;
+    private string Platform { get; set; } = string.Empty;
+    private string Model { get; set; } = string.Empty;
     private string Token { get; set; } = string.Empty;
+    private bool HasSnapshot { get; set; }
+    private bool TagsTruncated { get; set; }
+
+    private string? MessageText => Message switch
+    {
+        "image-uploaded" => "图片已上传，请填写替代文本并按需插入正文。",
+        "image-removed" => "图片已移除。",
+        "draft-discarded" => "已放弃上次提交保留的内容。",
+        _ => null
+    };
 
     private string? ErrorMessage => Error switch
     {
@@ -205,6 +542,8 @@ else
         "banned" => "账号已被封禁，不能发帖。",
         "validation" => $"提交内容不符合要求（字段：{Field ?? "未知"}）。",
         "invalid" => "提交失败，请检查内容后重试。",
+        "image-invalid" => "图片上传失败：请选择 JPG/PNG/WebP/GIF，单张不超过 10 MB。",
+        "image-missing" => "图片不存在、已被移除或不属于当前账号。",
         _ => null
     };
 
@@ -212,7 +551,7 @@ else
     {
         var http = HttpContextAccessor.HttpContext
             ?? throw new InvalidOperationException("HttpContext is unavailable.");
-        if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out _))
+        if (!Guid.TryParse(http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
         {
             StatusCodeResponse.Defer(http, StatusCodes.Status403Forbidden);
             return;
@@ -221,7 +560,67 @@ else
         Token = Antiforgery.GetAndStoreTokens(http).RequestToken
             ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
         Categories = await PublicContent.GetCategoriesAsync();
-        var tagPage = await PublicContent.GetTagsAsync(50, null);
-        Tags = tagPage.Items;
+        Tags = await LoadAllTagsAsync(http.RequestAborted);
+
+        var snapshot = Drafts.GetSnapshot(userId);
+        HasSnapshot = snapshot is not null;
+        if (snapshot is not null)
+        {
+            Title = snapshot.Title;
+            CategoryId = snapshot.CategoryId;
+            BodyMd = snapshot.BodyMd;
+            Kernel = snapshot.Kernel;
+            Platform = snapshot.Platform;
+            Model = snapshot.Model;
+            SelectedTags = snapshot.Tags.ToHashSet(StringComparer.Ordinal);
+            Artifacts = snapshot.Artifacts;
+        }
+
+        var altById = snapshot?.Images.ToDictionary(image => image.Id, image => image.AltText)
+            ?? new Dictionary<Guid, string>();
+        Images = Drafts.GetImages(userId)
+            .Select(image => altById.TryGetValue(image.Id, out var alt)
+                ? image with { AltText = alt }
+                : image)
+            .ToList();
+        Artifacts = NormalizeArtifactRows(Artifacts);
+    }
+
+    private async Task<IReadOnlyList<TagView>> LoadAllTagsAsync(CancellationToken cancellationToken)
+    {
+        var tags = new List<TagView>();
+        string? cursor = null;
+        for (var page = 0; page < 10; page++)
+        {
+            var tagPage = await PublicContent.GetTagsAsync(100, cursor, cancellationToken);
+            if (tagPage.InvalidCursor)
+            {
+                break;
+            }
+
+            tags.AddRange(tagPage.Items);
+            cursor = tagPage.NextCursor;
+            if (cursor is null)
+            {
+                break;
+            }
+        }
+
+        TagsTruncated = cursor is not null;
+        return tags
+            .OrderBy(tag => tag.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(tag => tag.Slug, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static IReadOnlyList<EditorArtifact> NormalizeArtifactRows(IReadOnlyList<EditorArtifact> artifacts)
+    {
+        var rows = artifacts.Take(5).ToList();
+        while (rows.Count < 5)
+        {
+            rows.Add(new EditorArtifact(string.Empty, string.Empty, string.Empty, string.Empty));
+        }
+
+        return rows;
     }
 }

@@ -12,19 +12,7 @@ namespace WhalePod.Tests.Integration;
 
 public sealed class InviteAdminServiceTests
 {
-    private static string ConnectionString =>
-        Environment.GetEnvironmentVariable("WHALEPOD_TEST_DB_CONNECTION")
-        ?? throw new InvalidOperationException("WHALEPOD_TEST_DB_CONNECTION is required.");
-
-    private static WhalePodDbContext CreateContext()
-    {
-        var options = new DbContextOptionsBuilder<WhalePodDbContext>()
-            .UseNpgsql(ConnectionString)
-            .UseSnakeCaseNamingConvention()
-            .Options;
-
-        return new WhalePodDbContext(options);
-    }
+    private static WhalePodDbContext CreateContext() => ServiceTestSupport.CreateContext();
 
     [DatabaseFact]
     public async Task Create_stores_hash_and_returns_plaintext_once_with_audit()
@@ -205,20 +193,20 @@ public sealed class InviteAdminServiceTests
 
         var service = CreateService(db);
 
-        var byHint = await service.ListAsync("active", hint, null, 1);
+        var byHint = await service.ListAsync(admin.Id, "active", hint, null, 1);
         var activeItem = Assert.Single(byHint.Items);
         Assert.Equal(active.Id, activeItem.Id);
         Assert.Equal("active", activeItem.State);
         Assert.Equal(new[] { invitee.Handle }, activeItem.RecentInvitees);
 
-        var byInvitee = await service.ListAsync(null, null, invitee.Handle, 1);
+        var byInvitee = await service.ListAsync(admin.Id, null, null, invitee.Handle, 1);
         Assert.Contains(byInvitee.Items, item => item.Id == active.Id);
 
-        var byCreator = await service.ListAsync(null, null, admin.Handle, 1);
+        var byCreator = await service.ListAsync(admin.Id, null, null, admin.Handle, 1);
         Assert.Contains(byCreator.Items, item => item.Id == active.Id);
 
-        Assert.Single((await service.ListAsync("expired", expired.CodeHint![^4..], null, 1)).Items);
-        Assert.Single((await service.ListAsync("exhausted", exhausted.CodeHint![^4..], null, 1)).Items);
+        Assert.Single((await service.ListAsync(admin.Id, "expired", expired.CodeHint![^4..], null, 1)).Items);
+        Assert.Single((await service.ListAsync(admin.Id, "exhausted", exhausted.CodeHint![^4..], null, 1)).Items);
 
         Assert.Equal(active.Id, await service.FindInviteIdByCodeAsync(plaintext));
         Assert.Null(await service.FindInviteIdByCodeAsync($"{plaintext}-wrong"));

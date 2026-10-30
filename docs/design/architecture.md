@@ -7,7 +7,7 @@
 | 需求基线 | [SRS](../SRS.md) v0.1.0（唯一事实来源） |
 | 数据模型 | [erd.md](erd.md) |
 | HTTP 契约 | [openapi.yaml](../api/openapi.yaml) |
-| 验收与限制 | [acceptance.md](acceptance.md)、[production-readiness.md](production-readiness.md) |
+| 验收与限制 | [acceptance.md](acceptance.md)、[production-readiness.md](production-readiness.md)、[architecture-debt.md](architecture-debt.md) |
 
 本文记录当前交付版本的系统边界、运行时拓扑、关键设计决策与实现约束。具体需求行为以 SRS 为准；表结构与索引以 ERD/迁移为准；HTTP 字段以 OpenAPI 为准。
 
@@ -152,4 +152,4 @@ Browser ──HTTPS──> Web (Blazor Web App, SSR + 按需交互)
 - 真实屏幕阅读器/物理设备 UAT、macOS/Linux CLI 实机与代码签名/公证。
 - 完整 10 分钟容量压测与生产监控阈值校准。
 
-详细验收状态见 [acceptance.md](acceptance.md)，上线配置与回滚见 [production-readiness.md](production-readiness.md)。
+详细验收状态见 [acceptance.md](acceptance.md)，上线配置与回滚见 [production-readiness.md](production-readiness.md)、[architecture-debt.md](architecture-debt.md)。

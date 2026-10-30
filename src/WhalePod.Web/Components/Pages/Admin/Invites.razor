@@ -1,6 +1,7 @@
 @page "/admin/invites"
 @layout AdminLayout
 @attribute [Authorize(Policy = "AdminOnly")]
+@using System.Security.Claims
 @using Microsoft.AspNetCore.Antiforgery
 @using WhalePod.Infrastructure.Services
 @inject InviteAdminService InviteAdmin
@@ -236,7 +237,15 @@
 
         Token = Antiforgery.GetAndStoreTokens(httpContext).RequestToken
             ?? throw new InvalidOperationException("Unable to issue an antiforgery token.");
-        Result = await InviteAdmin.ListAsync(State, Hint, Member, Page);
+        if (!Guid.TryParse(
+                httpContext.User.FindFirstValue(System.Security.Claims.ClaimTypes.NameIdentifier),
+                out var actorId))
+        {
+            StatusCodeResponse.Defer(httpContext, StatusCodes.Status403Forbidden);
+            return;
+        }
+
+        Result = await InviteAdmin.ListAsync(actorId, State, Hint, Member, Page);
     }
 
     private string PageUrl(int page)

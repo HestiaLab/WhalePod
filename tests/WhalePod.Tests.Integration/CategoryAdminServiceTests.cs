@@ -30,6 +30,7 @@ public sealed class CategoryAdminServiceTests
             "管理后台板块",
             "用于分类管理测试",
             10,
+            requiresKernel: false,
             ServiceTestSupport.NewAudit(admin.Id));
         Assert.Equal(CategoryMutationOutcome.Success, created.Outcome);
         Assert.NotNull(created.CategoryId);
@@ -40,6 +41,7 @@ public sealed class CategoryAdminServiceTests
             "重复板块",
             null,
             20,
+            requiresKernel: false,
             ServiceTestSupport.NewAudit(admin.Id));
         Assert.Equal(CategoryMutationOutcome.DuplicateSlug, duplicate.Outcome);
 
@@ -49,6 +51,7 @@ public sealed class CategoryAdminServiceTests
             string.Empty,
             null,
             20,
+            requiresKernel: false,
             ServiceTestSupport.NewAudit(admin.Id));
         Assert.Equal(CategoryMutationOutcome.InvalidInput, invalid.Outcome);
 
@@ -58,6 +61,7 @@ public sealed class CategoryAdminServiceTests
             "管理后台板块（更新）",
             "更新说明",
             5,
+            requiresKernel: false,
             ServiceTestSupport.NewAudit(admin.Id));
         Assert.Equal(CategoryMutationOutcome.Success, updated.Outcome);
 
@@ -106,6 +110,7 @@ public sealed class CategoryAdminServiceTests
             "不存在",
             null,
             1,
+            requiresKernel: false,
             ServiceTestSupport.NewAudit(admin.Id));
         Assert.Equal(CategoryMutationOutcome.NotFound, missing.Outcome);
     }

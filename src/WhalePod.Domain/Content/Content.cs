@@ -10,6 +10,7 @@ public sealed class Category
     public string? Description { get; set; }
     public int DisplayOrder { get; set; }
     public string Status { get; set; } = CategoryStatuses.Active;
+    public bool RequiresKernel { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
@@ -67,6 +68,8 @@ public sealed class MediaUpload
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? AttachedAt { get; set; }
     public DateTimeOffset ExpiresAt { get; set; } = DateTimeOffset.UtcNow.AddHours(24);
+    public int CleanupAttempts { get; set; }
+    public DateTimeOffset? NextAttemptAt { get; set; }
 }
 
 public sealed class Tag

@@ -15,11 +15,11 @@ public sealed partial class WhalePodDbContext
         {
             b.ToTable("moderation_action", t =>
             {
-                t.HasCheckConstraint("ck_moderation_action_target", "target_type IN ('post','comment')");
+                t.HasCheckConstraint("ck_moderation_action_target", "target_type IN ('post','comment','user')");
                 t.HasCheckConstraint("ck_moderation_action_actor", "actor_type IN ('user','system')");
-                t.HasCheckConstraint("ck_moderation_action_action", "action IN ('approve','reject','hide','restore','delete','escalate')");
-                t.HasCheckConstraint("ck_moderation_action_from_status", "from_status IN ('pending','approved','rejected','hidden','deleted')");
-                t.HasCheckConstraint("ck_moderation_action_to_status", "to_status IN ('pending','approved','rejected','hidden','deleted')");
+                t.HasCheckConstraint("ck_moderation_action_action", "action IN ('approve','reject','hide','restore','delete','escalate','mute','ban')");
+                t.HasCheckConstraint("ck_moderation_action_from_status", "from_status IN ('pending','approved','rejected','hidden','deleted','active','muted','banned')");
+                t.HasCheckConstraint("ck_moderation_action_to_status", "to_status IN ('pending','approved','rejected','hidden','deleted','active','muted','banned')");
                 t.HasCheckConstraint("ck_moderation_action_reason", "action NOT IN ('reject','hide','delete','escalate') OR (reason IS NOT NULL AND length(reason) > 0)");
                 t.HasCheckConstraint("ck_moderation_action_version", "content_version > 0");
             });

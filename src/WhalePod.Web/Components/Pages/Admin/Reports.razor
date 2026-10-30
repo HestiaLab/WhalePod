@@ -125,6 +125,12 @@ else
                                         <label for="report-action-expiry-@report.Id">禁言到期（UTC，禁言必填）</label>
                                         <input id="report-action-expiry-@report.Id" name="actionExpiresAt" type="datetime-local" />
                                     </p>
+                                    <p>
+                                        <label>
+                                            <input type="checkbox" name="confirm" value="yes" required />
+                                            我确认提交处理结果（不可撤销）
+                                        </label>
+                                    </p>
                                     <button type="submit">提交处理</button>
                                 </form>
                             }
@@ -172,6 +178,7 @@ else
         "conflict" => "举报已处理或目标状态已变化。",
         "missing" => "举报或目标不存在。",
         "forbidden" => "当前账号无权处理该举报。",
+        "confirm" => "请先勾选确认再提交处理结果。",
         _ => null
     };
 

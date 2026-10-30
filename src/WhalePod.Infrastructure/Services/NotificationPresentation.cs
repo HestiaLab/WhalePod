@@ -124,7 +124,11 @@ internal static class NotificationPresentation
             return $"/posts/{targetId}";
         }
 
-        if ((type is NotificationTypes.Reply or NotificationTypes.CommentAccepted) && isObject)
+        if ((type is NotificationTypes.Reply
+                or NotificationTypes.CommentAccepted
+                or NotificationTypes.CommentApproved
+                or NotificationTypes.CommentRejected)
+            && isObject)
         {
             var postId = TryGuid(root, "postId");
             if (postId is not null)

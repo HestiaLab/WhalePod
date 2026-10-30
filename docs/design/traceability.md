@@ -17,7 +17,7 @@
 | SRS §5.1 核心实体 | 27/27 已建模 |
 | 当前交付版本支撑实体 | `MediaUpload`、`EmailSuppression`、`Appeal`、`ModerationCheck`、`SensitiveWord`；另有 `CopyDedupe` 内部去重表 |
 | OpenAPI | 45 路径 / 53 操作 / 86 schema |
-| UAT | 20 个场景已建立并执行；结果见 [acceptance.md](acceptance.md) |
+| UAT | 20 个场景已建立；执行状态以 [acceptance.md](acceptance.md) 为准（UAT-15 未执行，多项为部分；历史本地结论未随仓库留存原始命令/产物） |
 | AI 边界 | 只建议、人工裁决全部；无自动通过/驳回；无公网 MCP |
 | 主要生产前置 | 真实 OAuth/SMTP/COS、腾讯云预发与迁移、Q-02 模型/标注、C-09 法务、真实屏幕阅读器/物理设备 |
 

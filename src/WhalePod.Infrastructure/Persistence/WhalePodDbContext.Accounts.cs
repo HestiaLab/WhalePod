@@ -36,6 +36,7 @@ public sealed partial class WhalePodDbContext
             b.Property(x => x.Status).HasMaxLength(20).HasDefaultValue(UserStatuses.Active);
             b.Property(x => x.StatusReason).HasMaxLength(500);
             b.Property(x => x.Role).HasMaxLength(20).HasDefaultValue(UserRoles.Member);
+            b.Property(x => x.SessionVersion).HasDefaultValue(1);
             b.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
             b.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
 

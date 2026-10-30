@@ -811,8 +811,15 @@ public sealed class ContentModerationService(
         }
 
         var acceptedCleared = false;
+        if (comment is not null && toStatus == ModerationStatuses.Approved)
+        {
+            var activityPost = await db.Posts
+                .SingleAsync(candidate => candidate.Id == comment.PostId, cancellationToken);
+            activityPost.LastActivityAt = now;
+        }
+
         if (comment is not null
-            && action is ModerationActions.Hide or ModerationActions.Delete
+            && action is ModerationActions.Hide or ModerationActions.Delete or ModerationActions.Reject
             && (comment.IsAccepted || await IsAcceptedCommentAsync(comment, cancellationToken)))
         {
             acceptedCleared = true;
@@ -829,6 +836,31 @@ public sealed class ContentModerationService(
                 parentPost.Id,
                 new { commentId = comment.Id, reason = "moderated_comment" },
                 now));
+            if (parentPost.AuthorId != comment.AuthorId)
+            {
+                var payload = new
+                {
+                    summary = "被采纳的评论已离开通过状态，帖子已恢复为未解决。",
+                    targetType = "post",
+                    targetId = parentPost.Id,
+                    targetUrl = $"/posts/{parentPost.Id}",
+                    action = "acceptance_cleared"
+                };
+                var dedupeKey = $"comment-acceptance-cleared:{comment.Id:N}:{newVersion}";
+                db.Notifications.Add(NotificationWriter.Create(
+                    parentPost.AuthorId,
+                    NotificationTypes.CommentAccepted,
+                    payload,
+                    dedupeKey,
+                    now));
+                await emailQueue.EnqueueForNotificationAsync(
+                    parentPost.AuthorId,
+                    NotificationTypes.CommentAccepted,
+                    payload,
+                    dedupeKey,
+                    now,
+                    cancellationToken);
+            }
         }
 
         var moderationAction = new ModerationAction
@@ -862,6 +894,8 @@ public sealed class ContentModerationService(
             .ToListAsync(cancellationToken);
         foreach (var task in tasks)
         {
+            task.LeaseExpiresAt = null;
+            task.LeaseToken = null;
             if (action == ModerationActions.Escalate)
             {
                 task.Status = ModerationTaskStatuses.Escalated;
@@ -887,6 +921,12 @@ public sealed class ContentModerationService(
             {
                 targetType,
                 targetId,
+                postId = comment?.PostId,
+                targetUrl = targetType == ModerationTargetTypes.Comment && comment is not null
+                    ? $"/posts/{comment.PostId}?comment={targetId}"
+                    : targetType == ModerationTargetTypes.Post
+                        ? $"/posts/{targetId}"
+                        : null,
                 action,
                 moderationStatus = toStatus,
                 reason = normalizedReason

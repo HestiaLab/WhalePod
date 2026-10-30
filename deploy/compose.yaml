@@ -1,0 +1,108 @@
+services:
+  db:
+    image: postgres:18.6
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-whalepod}
+      POSTGRES_USER: ${POSTGRES_USER:-whalepod}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: migrate
+    environment:
+      WHALEPOD_DB_CONNECTION: Host=db;Port=5432;Database=${POSTGRES_DB:-whalepod};Username=${POSTGRES_USER:-whalepod};Password=${POSTGRES_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["migrate"]
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: web
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      AllowedHosts: ${PUBLIC_HOST:?set PUBLIC_HOST}
+      ConnectionStrings__WhalePod: Host=db;Port=5432;Database=${POSTGRES_DB:-whalepod};Username=${POSTGRES_USER:-whalepod};Password=${POSTGRES_PASSWORD}
+      PublicSite__BaseUrl: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL}
+      DataProtection__KeysDirectory: /var/whalepod/dpkeys
+      Audit__IpHashSecret: ${AUDIT_IP_HASH_SECRET:?set AUDIT_IP_HASH_SECRET}
+      ViewCounter__DedupeSecret: ${VIEW_DEDUPE_SECRET:?set VIEW_DEDUPE_SECRET}
+      CopyCounter__DedupeSecret: ${COPY_DEDUPE_SECRET:?set COPY_DEDUPE_SECRET}
+      MediaStorage__Provider: Local
+      MediaStorage__PublicBaseUrl: /media
+      MediaStorage__LocalRootPath: /var/whalepod/media
+      Email__Provider: ${EMAIL_PROVIDER:-Smtp}
+      Email__PublicBaseUrl: ${PUBLIC_BASE_URL}
+      Email__SuppressionHashSecret: ${EMAIL_SUPPRESSION_SECRET:?set EMAIL_SUPPRESSION_SECRET}
+      Email__UnsubscribeSecret: ${EMAIL_UNSUBSCRIBE_SECRET:?set EMAIL_UNSUBSCRIBE_SECRET}
+      Email__Smtp__Host: ${SMTP_HOST:?set SMTP_HOST}
+      Email__Smtp__Port: ${SMTP_PORT:-587}
+      Email__Smtp__Security: ${SMTP_SECURITY:-StartTls}
+      Email__Smtp__UserName: ${SMTP_USERNAME}
+      Email__Smtp__Password: ${SMTP_PASSWORD}
+      Email__Smtp__FromAddress: ${SMTP_FROM_ADDRESS:?set SMTP_FROM_ADDRESS}
+      GitHub__ClientId: ${GITHUB_CLIENT_ID:?set GITHUB_CLIENT_ID}
+      GitHub__ClientSecret: ${GITHUB_CLIENT_SECRET:?set GITHUB_CLIENT_SECRET}
+      Auth__BootstrapAdminHandles: ${BOOTSTRAP_ADMIN_HANDLES:-}
+    volumes:
+      - dpkeys:/var/whalepod/dpkeys
+      - media:/var/whalepod/media
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      AllowedHosts: ${PUBLIC_HOST:?set PUBLIC_HOST}
+      ConnectionStrings__WhalePod: Host=db;Port=5432;Database=${POSTGRES_DB:-whalepod};Username=${POSTGRES_USER:-whalepod};Password=${POSTGRES_PASSWORD}
+      PublicSite__BaseUrl: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL}
+      DataProtection__KeysDirectory: /var/whalepod/dpkeys
+      Audit__IpHashSecret: ${AUDIT_IP_HASH_SECRET:?set AUDIT_IP_HASH_SECRET}
+      ViewCounter__DedupeSecret: ${VIEW_DEDUPE_SECRET:?set VIEW_DEDUPE_SECRET}
+      CopyCounter__DedupeSecret: ${COPY_DEDUPE_SECRET:?set COPY_DEDUPE_SECRET}
+      MediaStorage__Provider: Local
+      MediaStorage__PublicBaseUrl: /media
+      MediaStorage__LocalRootPath: /var/whalepod/media
+      Email__Provider: ${EMAIL_PROVIDER:-Smtp}
+      Email__PublicBaseUrl: ${PUBLIC_BASE_URL}
+      Email__SuppressionHashSecret: ${EMAIL_SUPPRESSION_SECRET:?set EMAIL_SUPPRESSION_SECRET}
+      Email__UnsubscribeSecret: ${EMAIL_UNSUBSCRIBE_SECRET:?set EMAIL_UNSUBSCRIBE_SECRET}
+      Email__Smtp__Host: ${SMTP_HOST:?set SMTP_HOST}
+      Email__Smtp__Port: ${SMTP_PORT:-587}
+      Email__Smtp__Security: ${SMTP_SECURITY:-StartTls}
+      Email__Smtp__UserName: ${SMTP_USERNAME}
+      Email__Smtp__Password: ${SMTP_PASSWORD}
+      Email__Smtp__FromAddress: ${SMTP_FROM_ADDRESS:?set SMTP_FROM_ADDRESS}
+    volumes:
+      - dpkeys:/var/whalepod/dpkeys
+      - media:/var/whalepod/media
+    ports:
+      - "${API_PORT:-8081}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  dpkeys:
+  media:

@@ -11,19 +11,7 @@ namespace WhalePod.Tests.Integration;
 
 public sealed class PublicContentServiceTests
 {
-    private static string ConnectionString =>
-        Environment.GetEnvironmentVariable("WHALEPOD_TEST_DB_CONNECTION")
-        ?? throw new InvalidOperationException("WHALEPOD_TEST_DB_CONNECTION is required.");
-
-    private static WhalePodDbContext CreateContext()
-    {
-        var options = new DbContextOptionsBuilder<WhalePodDbContext>()
-            .UseNpgsql(ConnectionString)
-            .UseSnakeCaseNamingConvention()
-            .Options;
-
-        return new WhalePodDbContext(options);
-    }
+    private static WhalePodDbContext CreateContext() => ServiceTestSupport.CreateContext();
 
     [DatabaseFact]
     public async Task Feed_hides_non_public_posts_and_supports_sort_filter_and_cursor()

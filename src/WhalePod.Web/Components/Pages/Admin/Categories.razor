@@ -43,6 +43,12 @@
             <label for="category-order">排序（0-1000，越小越前）</label>
             <input id="category-order" name="displayOrder" type="number" min="0" max="1000" value="100" required />
         </p>
+        <p>
+            <label>
+                <input type="checkbox" name="requiresKernel" value="true" />
+                该板块必须填写内核版本
+            </label>
+        </p>
         <button type="submit">创建板块</button>
     </form>
 </section>
@@ -82,6 +88,10 @@
                                     <textarea id="category-description-@item.Id" name="description" rows="2" maxlength="200">@item.Description</textarea>
                                     <label for="category-order-@item.Id">排序</label>
                                     <input id="category-order-@item.Id" name="displayOrder" type="number" min="0" max="1000" value="@item.DisplayOrder" required />
+                                    <label>
+                                        <input type="checkbox" name="requiresKernel" value="true" checked="@item.RequiresKernel" />
+                                        必须填写内核版本
+                                    </label>
                                     <button type="submit">保存</button>
                                 </form>
                             </td>

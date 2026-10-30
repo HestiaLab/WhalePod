@@ -89,6 +89,28 @@ public sealed class PostWriteService(
         var artifacts = NormalizeArtifacts(command.Artifacts, "artifacts");
         var images = await LoadUploadsAsync(actorId, command.Images, "images", now, cancellationToken);
         var rendered = MarkdownRenderer.Render(bodyMd);
+        var sensitive = await SensitiveWordPolicy.EvaluateAsync(
+            db,
+            BuildSensitiveText(title, bodyMd, artifacts),
+            cancellationToken);
+        if (sensitive.Reject && actor.Role != UserRoles.Admin)
+        {
+            db.AuditLogs.Add(AuditLogWriter.CreateUserAction(
+                audit,
+                "sensitive_word.rejected",
+                "post",
+                null,
+                new
+                {
+                    policy = sensitive.Policy,
+                    policyUpdatedAt = sensitive.PolicyUpdatedAt,
+                    matchedTerms = sensitive.MatchedTerms,
+                    stage = "create"
+                },
+                now));
+            await db.SaveChangesAsync(cancellationToken);
+            throw ApiProblemException.Validation("content", "内容包含不允许发布的词，请修改后重试。");
+        }
 
         var post = new Post
         {
@@ -111,6 +133,15 @@ public sealed class PostWriteService(
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
         db.Posts.Add(post);
+        if (sensitive.HasMatches)
+        {
+            db.ModerationChecks.Add(SensitiveWordPolicy.CreateCheck(
+                "post",
+                post.Id,
+                post.Version,
+                sensitive,
+                now));
+        }
         foreach (var tagId in tagIds)
         {
             db.PostTags.Add(new PostTag { PostId = post.Id, TagId = tagId, CreatedAt = now });
@@ -192,6 +223,39 @@ public sealed class PostWriteService(
             throw ApiProblemException.Validation("reason", "原因不能超过 500 个字符。");
         }
 
+        SensitiveWordEvaluation? sensitive = null;
+        if (command.Title is not null || command.BodyMd is not null || command.Artifacts is not null)
+        {
+            var scanText = BuildSensitiveText(
+                command.Title ?? post.Title,
+                command.BodyMd ?? post.BodyMd,
+                command.Artifacts?.Select(artifact => new NormalizedArtifact(
+                    (artifact.Kind ?? string.Empty).Trim().ToLowerInvariant(),
+                    (artifact.Name ?? string.Empty).Trim(),
+                    NormalizeOptional(artifact.Note),
+                    artifact.Content ?? string.Empty)) ?? []);
+            sensitive = await SensitiveWordPolicy.EvaluateAsync(db, scanText, cancellationToken);
+            if (sensitive.Reject && !isAdmin)
+            {
+                db.AuditLogs.Add(AuditLogWriter.CreateUserAction(
+                    audit,
+                    "sensitive_word.rejected",
+                    "post",
+                    post.Id,
+                    new
+                    {
+                        policy = sensitive.Policy,
+                        policyUpdatedAt = sensitive.PolicyUpdatedAt,
+                        matchedTerms = sensitive.MatchedTerms,
+                        stage = "update"
+                    },
+                    now));
+                await db.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                throw ApiProblemException.Validation("content", "内容包含不允许发布的词，请修改后重试。");
+            }
+        }
+
         if (command.Title is not null)
         {
             post.Title = NormalizeTitle(command.Title);
@@ -226,9 +290,9 @@ public sealed class PostWriteService(
         else if (command.CategoryId is not null)
         {
             var category = await LoadCategoryAsync(post.CategoryId, cancellationToken);
-            if (category.Name == "抄作业" && string.IsNullOrWhiteSpace(post.EnvKernel))
+            if (category.RequiresKernel && string.IsNullOrWhiteSpace(post.EnvKernel))
             {
-                throw ApiProblemException.Validation("environment.kernelVersion", "“抄作业”板块必须填写内核版本。");
+                throw ApiProblemException.Validation("environment.kernelVersion", "该板块必须填写内核版本。");
             }
         }
 
@@ -271,6 +335,15 @@ public sealed class PostWriteService(
 
         post.Version++;
         post.UpdatedAt = now;
+        if (sensitive is { HasMatches: true })
+        {
+            db.ModerationChecks.Add(SensitiveWordPolicy.CreateCheck(
+                "post",
+                post.Id,
+                post.Version,
+                sensitive,
+                now));
+        }
 
         db.AuditLogs.Add(AuditLogWriter.CreateUserAction(
             audit,
@@ -456,6 +529,26 @@ public sealed class PostWriteService(
         return body;
     }
 
+    private static string BuildSensitiveText(
+        string title,
+        string body,
+        IEnumerable<NormalizedArtifact> artifacts)
+    {
+        var parts = new List<string> { title, body };
+        foreach (var artifact in artifacts)
+        {
+            parts.Add(artifact.Name);
+            if (artifact.Note is not null)
+            {
+                parts.Add(artifact.Note);
+            }
+
+            parts.Add(artifact.Content);
+        }
+
+        return string.Join('\n', parts);
+    }
+
     private static (string? Kernel, string? Platform, string? Model) NormalizeEnvironment(
         EnvironmentInput? environment,
         Category category,
@@ -485,9 +578,9 @@ public sealed class PostWriteService(
             throw ApiProblemException.Validation($"{field}.model", "模型名称不能超过 100 个字符。");
         }
 
-        if (category.Name == "抄作业" && string.IsNullOrWhiteSpace(kernel))
+        if (category.RequiresKernel && string.IsNullOrWhiteSpace(kernel))
         {
-            throw ApiProblemException.Validation($"{field}.kernelVersion", "“抄作业”板块必须填写内核版本。");
+            throw ApiProblemException.Validation($"{field}.kernelVersion", "该板块必须填写内核版本。");
         }
 
         return (kernel, platform, model);
