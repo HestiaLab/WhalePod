@@ -5,6 +5,8 @@
 
 面向 AI 工具使用者的邀请制技术社区：只收录可复现的实测记录与可直接复制的产物。
 
+**An invite-only tech community for AI-tool users — only reproducible test logs and directly copyable artifacts.**
+
 > v0.1.0 · 2026-10-27 · 需求基线：[SRS v0.1.0](docs/SRS.md)
 >
 > 静态项目介绍：[hestialab.github.io/WhalePod](https://hestialab.github.io/WhalePod/)
